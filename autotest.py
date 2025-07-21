@@ -2,424 +2,410 @@
 """
 AutoTest - Automated Network Penetration Testing Framework
 
-A comprehensive framework for automated security testing that orchestrates
-multiple tools to perform reconnaissance, vulnerability scanning, and exploitation.
+A modular tool for automating common network penetration testing tasks.
 """
 
-import argparse
-import asyncio
-import json
-import logging
-import os
 import sys
+import os
+import logging
 import signal
-import time
-from datetime import datetime
+import threading
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Optional, Dict, Any
+import click
+from rich.console import Console
+from rich.logging import RichHandler
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.config import Config
-from core.exceptions import ConfigurationError
-from core.dispatcher import Dispatcher
-from core.results import ResultsManager
-from ui.tui import AutoTestTUI, TaskStatus
-from utils.logger import setup_logging, get_logger
-from utils.network import parse_targets, validate_targets
+from core.exceptions import AutoTestException
+from core.input_parser import InputParser
+from core.discovery import Discovery
+from core.task_manager import TaskManager, Task
+from core.output import OutputManager
+from core.utils import create_directory, get_timestamp
+
+# Import plugins
+from plugins.services.smb import SMBPlugin
+from plugins.services.rdp import RDPPlugin
+
+# Import UI (optional - not available on Windows)
+try:
+    from ui.tui import AutoTestTUI
+    TUI_AVAILABLE = True
+except ImportError:
+    TUI_AVAILABLE = False
+    AutoTestTUI = None
 
 
-__version__ = "1.0.0"
+# Setup logging
+console = Console()
+
+
+def setup_logging(log_level: str, log_file: Optional[Path] = None) -> None:
+    """Setup logging configuration."""
+    # Convert string level to logging constant
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+    
+    # Console handler with rich formatting
+    console_handler = RichHandler(
+        console=console,
+        show_time=True,
+        show_path=False
+    )
+    console_handler.setLevel(numeric_level)
+    root_logger.addHandler(console_handler)
+    
+    # File handler if specified
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(numeric_level)
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
 
 class AutoTest:
-    """Main AutoTest application class"""
+    """Main AutoTest application class."""
     
-    def __init__(self, config_path: Optional[str] = None, no_ui: bool = False):
-        """Initialize AutoTest
+    def __init__(self, config_path: Optional[str] = None):
+        """Initialize AutoTest."""
+        self.config = Config(config_path)
+        self.config.validate_config()
         
-        Args:
-            config_path: Path to configuration file
-            no_ui: Disable terminal UI
-        """
-        self.config = None
-        self.dispatcher = None
-        self.results_manager = None
-        self.ui = None if no_ui else AutoTestTUI()
-        self.logger = get_logger(__name__)
-        self._shutdown = False
+        self.input_parser = InputParser()
+        self.discovery = None
+        self.task_manager = None
+        self.output_manager = None
+        self.plugins = []
+        self.tui = None
         
-        # Setup signal handlers
+        # Shutdown handling
+        self.shutdown_event = threading.Event()
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
-        
-        # Load configuration
-        if config_path:
-            self._load_config(config_path)
-            
+    
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
-        self.logger.info(f"Received signal {signum}, initiating shutdown...")
-        self._shutdown = True
-        if self.dispatcher:
-            asyncio.create_task(self.dispatcher.cancel_all())
-        if self.ui:
-            self.ui.stop()
-            
-    def _load_config(self, config_path: str):
-        """Load configuration from file"""
+        """Handle shutdown signals."""
+        logging.info("Shutdown signal received")
+        self.shutdown()
+    
+    def load_plugins(self) -> None:
+        """Load all available plugins."""
+        logging.info("Loading plugins...")
+        
+        # Load service plugins
         try:
-            self.config = Config.from_file(config_path)
-            self.logger.info(f"Configuration loaded from {config_path}")
-        except ConfigurationError as e:
-            self.logger.error(f"Configuration validation failed: {e}")
-            sys.exit(1)
+            # SMB plugin
+            smb_plugin = SMBPlugin(self.config)
+            self.plugins.append(smb_plugin)
+            logging.info(f"Loaded plugin: SMB")
+            
+            # RDP plugin
+            rdp_plugin = RDPPlugin(self.config)
+            self.plugins.append(rdp_plugin)
+            logging.info(f"Loaded plugin: RDP")
+            
         except Exception as e:
-            self.logger.error(f"Failed to load configuration: {e}")
-            sys.exit(1)
-            
-    async def run(self, targets: List[str], options: Dict[str, Any]) -> int:
-        """Run AutoTest against specified targets
+            logging.error(f"Failed to load plugins: {e}")
+            raise
         
-        Args:
-            targets: List of target specifications
-            options: Command-line options
-            
-        Returns:
-            Exit code (0 for success, non-zero for failure)
-        """
-        start_time = time.time()
-        exit_code = 0
+        logging.info(f"Loaded {len(self.plugins)} plugins")
+    
+    def execute_plugin_task(self, task: Task) -> Any:
+        """Execute a task using the appropriate plugin."""
+        # Find the plugin for this task
+        plugin = None
+        for p in self.plugins:
+            if p.name == task.plugin_name:
+                plugin = p
+                break
+        
+        if not plugin:
+            raise AutoTestException(f"No plugin found for task: {task.plugin_name}")
+        
+        # Execute the task
+        return plugin.execute_task(task, self.output_manager)
+    
+    def run_scan(
+        self,
+        targets: List[str],
+        ports: Optional[str] = None,
+        no_tui: bool = False
+    ) -> None:
+        """Run the main scanning workflow."""
+        start_time = get_timestamp()
+        logging.info(f"Starting AutoTest scan at {start_time}")
+        
+        # Create output directory
+        timestamp = get_timestamp()
+        output_dir_name = f"autotest_scan_{timestamp}"
+        output_base = self.config.get('general.output_dir', 'output')
+        output_dir = Path(output_base) / output_dir_name
+        create_directory(str(output_dir))
+        logging.info(f"Output directory: {output_dir}")
+        
+        # Initialize output manager
+        self.output_manager = OutputManager(str(output_dir))
+        
+        # Save configuration
+        self.config.save_runtime_config(output_dir)
+        
+        # Setup log file in output directory
+        log_file = output_dir / "autotest.log"
+        setup_logging(self.config.get('general.log_level', 'INFO'), log_file)
         
         try:
-            # Initialize UI if enabled
-            if self.ui:
-                self.ui.start()
-                self.ui.log(f"AutoTest v{__version__} starting...")
-                
-            # Validate and parse targets
-            if self.ui:
-                self.ui.add_task("Target Validation")
-                self.ui.update_task("Target Validation", status=TaskStatus.RUNNING)
-                
-            parsed_targets = []
-            for target_spec in targets:
+            # Phase 1: Discovery
+            logging.info("Phase 1: Host and port discovery")
+            self.discovery = Discovery(self.config)
+            discovered_hosts = self.discovery.discover_hosts(targets, ports)
+            
+            if not discovered_hosts:
+                logging.warning("No live hosts found")
+                return
+            
+            # Export discovery results
+            discovery_file = output_dir / "discovery_results.json"
+            self.discovery.export_discovery_results(discovery_file)
+            
+            # Phase 2: Service Enumeration
+            logging.info(f"Phase 2: Service enumeration on {len(discovered_hosts)} hosts")
+            
+            # Initialize task manager
+            self.task_manager = TaskManager(self.config)
+            
+            # Create tasks from discovery results
+            self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins)
+            
+            # Setup TUI if not disabled and available
+            if not no_tui and TUI_AVAILABLE:
                 try:
-                    parsed = parse_targets(target_spec)
-                    validated = validate_targets(parsed)
-                    parsed_targets.extend(validated)
+                    self.tui = AutoTestTUI()
+                    tui_thread = threading.Thread(target=self.tui.run)
+                    tui_thread.daemon = True
+                    tui_thread.start()
                 except Exception as e:
-                    self.logger.error(f"Invalid target {target_spec}: {e}")
-                    if self.ui:
-                        self.ui.update_task("Target Validation", status=TaskStatus.FAILED, 
-                                          message=str(e))
-                    return 1
-                    
-            if self.ui:
-                self.ui.complete_task("Target Validation", 
-                                    message=f"{len(parsed_targets)} targets validated")
-                self.ui.set_progress(0, len(parsed_targets))
-                
-            self.logger.info(f"Processing {len(parsed_targets)} targets")
+                    logging.warning(f"Failed to start TUI: {e}")
+                    self.tui = None
+            elif not no_tui and not TUI_AVAILABLE:
+                logging.info("Terminal UI not available on this platform")
             
-            # Initialize results manager
-            output_dir = Path(options.get('output', 'autotest_results'))
-            self.results_manager = ResultsManager(output_dir)
+            # Start task execution
+            self.task_manager.start(self.execute_plugin_task)
             
-            # Initialize dispatcher
-            self.dispatcher = Dispatcher(
-                config=self.config,
-                results_manager=self.results_manager,
-                max_concurrent=options.get('threads', 10),
-                ui=self.ui
-            )
+            # Wait for completion
+            logging.info("Waiting for tasks to complete...")
+            completed = self.task_manager.wait_for_completion()
             
-            # Process targets
-            results = await self._process_targets(parsed_targets, options)
+            if not completed:
+                logging.warning("Scan timed out or was interrupted")
             
-            # Generate reports
-            if self.ui:
-                self.ui.add_task("Report Generation")
-                self.ui.update_task("Report Generation", status=TaskStatus.RUNNING)
-                
-            await self._generate_reports(results, options)
-            
-            if self.ui:
-                self.ui.complete_task("Report Generation")
-                
-            # Summary
-            elapsed = time.time() - start_time
-            self._print_summary(results, elapsed)
+            # Phase 3: Reporting
+            logging.info("Phase 3: Generating reports")
+            self._generate_reports(output_dir)
             
         except KeyboardInterrupt:
-            self.logger.info("Interrupted by user")
-            exit_code = 130
+            logging.info("Scan interrupted by user")
         except Exception as e:
-            self.logger.error(f"Fatal error: {e}", exc_info=True)
-            exit_code = 1
+            logging.error(f"Scan failed: {e}")
+            raise
         finally:
             # Cleanup
-            if self.ui:
-                self.ui.stop()
-                
-        return exit_code
-        
-    async def _process_targets(self, targets: List[str], options: Dict[str, Any]) -> Dict[str, Any]:
-        """Process all targets
-        
-        Args:
-            targets: List of validated targets
-            options: Processing options
+            self.shutdown()
             
-        Returns:
-            Results dictionary
-        """
+            # Create summary
+            if self.output_manager:
+                summary_file = self.output_manager.create_summary_log()
+                logging.info(f"Output summary: {summary_file}")
+            
+            end_time = get_timestamp()
+            logging.info(f"Scan completed at {end_time}")
+    
+    def _generate_reports(self, output_dir: Path) -> None:
+        """Generate final reports."""
+        # Collect all results
         results = {
-            'targets': {},
-            'summary': {
-                'total': len(targets),
-                'completed': 0,
-                'failed': 0,
-                'vulnerabilities': {
-                    'critical': 0,
-                    'high': 0,
-                    'medium': 0,
-                    'low': 0,
-                    'info': 0
-                }
-            }
+            'scan_info': {
+                'start_time': self.task_manager.stats.get('start_time'),
+                'end_time': self.task_manager.stats.get('end_time'),
+                'output_directory': str(output_dir)
+            },
+            'summary': self.task_manager.get_progress(),
+            'hosts': {}
         }
         
-        # Process each target
-        for i, target in enumerate(targets):
-            if self._shutdown:
-                break
-                
-            if self.ui:
-                self.ui.set_current_target(target)
-                self.ui.log(f"Starting scan of {target}")
-                
-            try:
-                # Run modules against target
-                target_results = await self.dispatcher.process_target(target, options)
-                
-                # Store results
-                results['targets'][target] = target_results
-                results['summary']['completed'] += 1
-                
-                # Update vulnerability counts
-                self._update_vuln_counts(results['summary']['vulnerabilities'], 
-                                       target_results)
-                
-                if self.ui:
-                    self.ui.set_progress(i + 1, len(targets))
-                    self.ui.log(f"Completed scan of {target}")
-                    
-            except Exception as e:
-                self.logger.error(f"Failed to process {target}: {e}")
-                results['summary']['failed'] += 1
-                results['targets'][target] = {'error': str(e)}
-                
-                if self.ui:
-                    self.ui.log(f"Failed to scan {target}: {e}")
-                    
-        return results
-        
-    def _update_vuln_counts(self, summary: Dict[str, int], target_results: Dict[str, Any]):
-        """Update vulnerability counts from target results"""
-        # This would parse the results from various tools and categorize vulnerabilities
-        # For now, this is a placeholder
-        pass
-        
-    async def _generate_reports(self, results: Dict[str, Any], options: Dict[str, Any]):
-        """Generate output reports
-        
-        Args:
-            results: Scan results
-            options: Report options
-        """
-        formats = options.get('format', ['json', 'html'])
-        if isinstance(formats, str):
-            formats = [formats]
+        # Organize results by host
+        for task in self.task_manager.completed_tasks:
+            host = task.target
+            if host not in results['hosts']:
+                results['hosts'][host] = {
+                    'tasks': [],
+                    'open_ports': set(),
+                    'services': set()
+                }
             
-        for fmt in formats:
-            try:
-                if fmt == 'json':
-                    await self.results_manager.save_json_report(results)
-                elif fmt == 'html':
-                    await self.results_manager.save_html_report(results)
-                elif fmt == 'xml':
-                    await self.results_manager.save_xml_report(results)
-                else:
-                    self.logger.warning(f"Unknown report format: {fmt}")
-            except Exception as e:
-                self.logger.error(f"Failed to generate {fmt} report: {e}")
-                
-    def _print_summary(self, results: Dict[str, Any], elapsed: float):
-        """Print scan summary"""
-        summary = results['summary']
-        
-        print("\n" + "="*60)
-        print("SCAN SUMMARY")
-        print("="*60)
-        print(f"Total Targets: {summary['total']}")
-        print(f"Completed: {summary['completed']}")
-        print(f"Failed: {summary['failed']}")
-        print(f"Elapsed Time: {elapsed:.2f} seconds")
-        
-        print("\nVulnerabilities Found:")
-        for severity, count in summary['vulnerabilities'].items():
-            if count > 0:
-                print(f"  {severity.upper()}: {count}")
-                
-        print("\nResults saved to:", self.results_manager.output_dir)
-        print("="*60)
-
-
-def parse_arguments():
-    """Parse command-line arguments"""
-    parser = argparse.ArgumentParser(
-        description="AutoTest - Automated Network Penetration Testing Framework",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s 192.168.1.0/24
-  %(prog)s 10.0.0.1-10.0.0.50
-  %(prog)s example.com
-  %(prog)s targets.txt -c config.yaml
-  %(prog)s 192.168.1.1 --quick --format html
-        """
-    )
-    
-    parser.add_argument(
-        'targets',
-        nargs='+',
-        help='Target hosts/networks (IP, CIDR, range, hostname, or file)'
-    )
-    
-    parser.add_argument(
-        '-c', '--config',
-        help='Configuration file (default: autotest.yaml)'
-    )
-    
-    parser.add_argument(
-        '-o', '--output',
-        default='autotest_results',
-        help='Output directory (default: autotest_results)'
-    )
-    
-    parser.add_argument(
-        '-f', '--format',
-        nargs='+',
-        choices=['json', 'html', 'xml'],
-        default=['json', 'html'],
-        help='Output format(s) (default: json html)'
-    )
-    
-    parser.add_argument(
-        '-t', '--threads',
-        type=int,
-        default=10,
-        help='Maximum concurrent tasks (default: 10)'
-    )
-    
-    parser.add_argument(
-        '--quick',
-        action='store_true',
-        help='Quick scan (skip time-intensive modules)'
-    )
-    
-    parser.add_argument(
-        '--stealth',
-        action='store_true',
-        help='Stealth mode (slower, less detectable)'
-    )
-    
-    parser.add_argument(
-        '--no-ui',
-        action='store_true',
-        help='Disable terminal UI'
-    )
-    
-    parser.add_argument(
-        '-v', '--verbose',
-        action='count',
-        default=0,
-        help='Increase verbosity (-v, -vv, -vvv)'
-    )
-    
-    parser.add_argument(
-        '--version',
-        action='version',
-        version=f'%(prog)s {__version__}'
-    )
-    
-    # Module selection
-    module_group = parser.add_argument_group('module selection')
-    module_group.add_argument(
-        '--enable',
-        nargs='+',
-        help='Enable specific modules'
-    )
-    module_group.add_argument(
-        '--disable',
-        nargs='+',
-        help='Disable specific modules'
-    )
-    module_group.add_argument(
-        '--list-modules',
-        action='store_true',
-        help='List available modules and exit'
-    )
-    
-    return parser.parse_args()
-
-
-def main():
-    """Main entry point"""
-    args = parse_arguments()
-    
-    # Setup logging
-    log_level = logging.WARNING - (args.verbose * 10)
-    setup_logging(level=log_level)
-    
-    # Handle special actions
-    if args.list_modules:
-        # Would list available modules
-        print("Available modules:")
-        print("  - nmap: Network discovery and port scanning")
-        print("  - nuclei: Vulnerability scanning")
-        print("  - metasploit: Exploitation framework")
-        print("  - nikto: Web server scanner")
-        print("  - dirb: Directory/file brute forcer")
-        return 0
-        
-    # Prepare options
-    options = {
-        'output': args.output,
-        'format': args.format,
-        'threads': args.threads,
-        'quick': args.quick,
-        'stealth': args.stealth,
-        'enable_modules': args.enable,
-        'disable_modules': args.disable,
-    }
-    
-    # Load targets from files if needed
-    targets = []
-    for target in args.targets:
-        if os.path.isfile(target):
-            with open(target, 'r') as f:
-                targets.extend(line.strip() for line in f if line.strip())
-        else:
-            targets.append(target)
+            task_result = {
+                'port': task.port,
+                'service': task.service,
+                'tool': task.plugin_name,
+                'status': task.status.value,
+                'started_at': task.started_at,
+                'completed_at': task.completed_at,
+                'result': task.result
+            }
             
-    # Create and run AutoTest
-    app = AutoTest(config_path=args.config, no_ui=args.no_ui)
+            results['hosts'][host]['tasks'].append(task_result)
+            results['hosts'][host]['open_ports'].add(task.port)
+            if task.service:
+                results['hosts'][host]['services'].add(task.service)
+        
+        # Add failed tasks
+        for task in self.task_manager.failed_tasks:
+            host = task.target
+            if host not in results['hosts']:
+                results['hosts'][host] = {
+                    'tasks': [],
+                    'open_ports': set(),
+                    'services': set()
+                }
+            
+            task_result = {
+                'port': task.port,
+                'service': task.service,
+                'tool': task.plugin_name,
+                'status': task.status.value,
+                'started_at': task.started_at,
+                'completed_at': task.completed_at,
+                'error': task.error
+            }
+            
+            results['hosts'][host]['tasks'].append(task_result)
+        
+        # Convert sets to lists for JSON serialization
+        for host_data in results['hosts'].values():
+            host_data['open_ports'] = sorted(list(host_data['open_ports']))
+            host_data['services'] = sorted(list(host_data['services']))
+        
+        # Generate reports in configured formats
+        generated_reports = self.output_manager.generate_reports(results)
+        
+        for format_type, report_path in generated_reports.items():
+            logging.info(f"Generated {format_type} report: {report_path}")
     
-    # Run async main
-    exit_code = asyncio.run(app.run(targets, options))
+    def shutdown(self) -> None:
+        """Shutdown the application cleanly."""
+        logging.info("Shutting down AutoTest...")
+        
+        if self.task_manager and self.task_manager.running:
+            self.task_manager.stop()
+        
+        self.shutdown_event.set()
+
+
+@click.command()
+@click.argument('targets', nargs=-1, required=True)
+@click.option('-c', '--config', help='Path to configuration file')
+@click.option('-p', '--ports', help='Port specification (default: from config)')
+@click.option('-o', '--output', help='Output directory (default: from config)')
+@click.option('--no-tui', is_flag=True, help='Disable TUI progress display')
+@click.option('--log-level', default='INFO', 
+              type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
+              help='Logging level')
+@click.option('-f', '--file', help='Read targets from file')
+@click.option('--nmap-xml', help='Import targets from Nmap XML file')
+@click.option('--masscan-json', help='Import targets from Masscan JSON file')
+def main(
+    targets: tuple,
+    config: Optional[str],
+    ports: Optional[str],
+    output: Optional[str],
+    no_tui: bool,
+    log_level: str,
+    file: Optional[str],
+    nmap_xml: Optional[str],
+    masscan_json: Optional[str]
+):
+    """
+    AutoTest - Automated Network Penetration Testing Framework
     
-    return exit_code
+    Targets can be specified as:
+    - IP addresses (192.168.1.1)
+    - CIDR ranges (192.168.1.0/24)
+    - Domains (example.com)
+    - Multiple targets separated by spaces
+    
+    Examples:
+        autotest 192.168.1.0/24
+        autotest 10.0.0.1 10.0.0.2 10.0.0.3
+        autotest -f targets.txt
+        autotest --nmap-xml scan.xml
+    """
+    # Setup initial logging
+    setup_logging(log_level)
+    
+    try:
+        # Initialize AutoTest
+        app = AutoTest(config)
+        
+        # Override output directory if specified
+        if output:
+            app.config.config['general']['output_dir'] = output
+        
+        # Load plugins
+        app.load_plugins()
+        
+        # Parse targets
+        input_parser = InputParser()
+        all_targets = []
+        
+        # Add command line targets
+        if targets:
+            all_targets.extend(targets)
+        
+        # Add targets from file
+        if file:
+            file_targets = input_parser.parse_targets(Path(file))
+            all_targets.extend(file_targets)
+        
+        # Add targets from Nmap XML
+        if nmap_xml:
+            nmap_results = input_parser.parse_nmap_xml(Path(nmap_xml))
+            all_targets.extend(nmap_results['hosts'].keys())
+        
+        # Add targets from Masscan JSON
+        if masscan_json:
+            masscan_results = input_parser.parse_masscan_json(Path(masscan_json))
+            all_targets.extend(masscan_results['hosts'].keys())
+        
+        if not all_targets:
+            console.print("[red]Error:[/red] No targets specified")
+            sys.exit(1)
+        
+        # Process and validate targets
+        processed_targets = input_parser.parse_targets(all_targets)
+        
+        console.print(f"[green]Starting scan of {len(processed_targets)} targets[/green]")
+        
+        # Run the scan
+        app.run_scan(processed_targets, ports, no_tui)
+        
+    except AutoTestException as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/red] {e}")
+        logging.exception("Unexpected error")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()
