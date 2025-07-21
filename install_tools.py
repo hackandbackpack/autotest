@@ -53,6 +53,12 @@ class ToolInstaller:
     
     def check_tool(self, command: str) -> bool:
         """Check if a tool is installed."""
+        # For simple existence check, just see if the command is available
+        tool_name = command.split()[0]
+        if shutil.which(tool_name):
+            return True
+        
+        # Fallback to running the command
         try:
             result = subprocess.run(
                 command.split(),
@@ -60,7 +66,9 @@ class ToolInstaller:
                 text=True,
                 timeout=5
             )
-            return result.returncode == 0
+            # Some tools return non-zero for --version (e.g., masscan)
+            # Check if we got any output instead
+            return result.returncode == 0 or bool(result.stdout or result.stderr)
         except:
             return False
     

@@ -312,7 +312,7 @@ class AutoTest:
 
 
 @click.command()
-@click.argument('targets', nargs=-1, required=True)
+@click.argument('targets', nargs=-1, required=False)
 @click.option('-c', '--config', help='Path to configuration file')
 @click.option('-p', '--ports', help='Port specification (default: from config)')
 @click.option('-o', '--output', help='Output directory (default: from config)')
@@ -348,6 +348,9 @@ def main(
         autotest 10.0.0.1 10.0.0.2 10.0.0.3
         autotest -f targets.txt
         autotest --nmap-xml scan.xml
+        autotest --masscan-json results.json
+    
+    Note: When using -f, --nmap-xml, or --masscan-json, command-line targets are optional.
     """
     # Setup initial logging
     setup_logging(log_level)
