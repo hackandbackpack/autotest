@@ -7,10 +7,15 @@ import ipaddress
 import os
 import json
 import time
+import shutil
+import subprocess
+import logging
 from datetime import datetime
 from typing import List, Tuple, Optional, Any, Dict
 import socket
 import struct
+
+logger = logging.getLogger(__name__)
 
 
 def validate_ip(ip: str) -> bool:
@@ -364,3 +369,240 @@ def merge_port_ranges(ports: List[int]) -> str:
         ranges.append(f"{start}-{end}")
     
     return ",".join(ranges)
+
+
+class ToolChecker:
+    """Utility class for checking and validating external tools."""
+    
+    # Tool installation commands for different platforms
+    INSTALL_COMMANDS = {
+        "nmap": {
+            "apt": "sudo apt-get install nmap",
+            "yum": "sudo yum install nmap",
+            "brew": "brew install nmap",
+            "windows": "Download from https://nmap.org/download.html"
+        },
+        "masscan": {
+            "apt": "sudo apt-get install masscan",
+            "yum": "sudo yum install masscan",
+            "brew": "brew install masscan",
+            "windows": "Download from https://github.com/robertdavidgraham/masscan"
+        },
+        "netexec": {
+            "pip": "pip install netexec",
+            "pipx": "pipx install netexec"
+        },
+        "nxc": {
+            "pip": "pip install netexec",
+            "pipx": "pipx install netexec"
+        },
+        "crackmapexec": {
+            "pip": "pip install crackmapexec",
+            "pipx": "pipx install crackmapexec"
+        },
+        "cme": {
+            "pip": "pip install crackmapexec",
+            "pipx": "pipx install crackmapexec"
+        },
+        "onesixtyone": {
+            "apt": "sudo apt-get install onesixtyone",
+            "yum": "sudo yum install onesixtyone",
+            "brew": "brew install onesixtyone",
+            "github": "git clone https://github.com/trailofbits/onesixtyone.git && cd onesixtyone && make"
+        },
+        "ssh-audit": {
+            "pip": "pip install ssh-audit",
+            "pipx": "pipx install ssh-audit"
+        },
+        "sslyze": {
+            "pip": "pip install sslyze",
+            "pipx": "pipx install sslyze"
+        },
+        "rdp-sec-check": {
+            "git": "git clone https://github.com/CiscoCXSecurity/rdp-sec-check.git",
+            "perl": "Requires Perl - check README in rdp-sec-check repo"
+        }
+    }
+    
+    # Tool aliases (different names for the same tool)
+    TOOL_ALIASES = {
+        "netexec": ["nxc", "netexec"],
+        "crackmapexec": ["cme", "crackmapexec"]
+    }
+    
+    @classmethod
+    def check_tool(cls, tool_name: str) -> Tuple[bool, Optional[str]]:
+        """Check if a tool is available in the system.
+        
+        Args:
+            tool_name: Name of the tool to check
+            
+        Returns:
+            Tuple of (is_available, path_to_tool)
+        """
+        # Check direct tool name
+        tool_path = shutil.which(tool_name)
+        if tool_path:
+            return True, tool_path
+        
+        # Check aliases
+        for primary, aliases in cls.TOOL_ALIASES.items():
+            if tool_name == primary or tool_name in aliases:
+                for alias in aliases:
+                    tool_path = shutil.which(alias)
+                    if tool_path:
+                        return True, tool_path
+        
+        return False, None
+    
+    @classmethod
+    def get_install_command(cls, tool_name: str) -> str:
+        """Get installation command for a tool.
+        
+        Args:
+            tool_name: Name of the tool
+            
+        Returns:
+            Installation command string
+        """
+        if tool_name not in cls.INSTALL_COMMANDS:
+            return f"No installation instructions available for {tool_name}"
+        
+        commands = cls.INSTALL_COMMANDS[tool_name]
+        install_options = []
+        
+        # Detect package manager
+        if shutil.which("apt-get"):
+            if "apt" in commands:
+                install_options.append(commands["apt"])
+        elif shutil.which("yum") or shutil.which("dnf"):
+            if "yum" in commands:
+                install_options.append(commands["yum"])
+        elif shutil.which("brew"):
+            if "brew" in commands:
+                install_options.append(commands["brew"])
+        
+        # Check for pip/pipx
+        if "pip" in commands:
+            if shutil.which("pipx"):
+                install_options.append(commands.get("pipx", commands["pip"]))
+            elif shutil.which("pip") or shutil.which("pip3"):
+                install_options.append(commands["pip"])
+        
+        # Add other options
+        for key in ["git", "github", "windows", "perl"]:
+            if key in commands:
+                install_options.append(commands[key])
+        
+        if install_options:
+            return " OR ".join(install_options)
+        
+        return f"Please install {tool_name} manually"
+    
+    @classmethod
+    def check_required_tools(cls, tools: List[str], skip_check: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Check multiple tools and return their status.
+        
+        Args:
+            tools: List of tool names to check
+            skip_check: If True, skip the actual check
+            
+        Returns:
+            Dictionary with tool status and installation commands
+        """
+        if skip_check:
+            logger.info("Skipping tool checks (--skip-tool-check flag used)")
+            return {}
+        
+        results = {}
+        
+        for tool in tools:
+            is_available, tool_path = cls.check_tool(tool)
+            results[tool] = {
+                "available": is_available,
+                "path": tool_path,
+                "install_command": None if is_available else cls.get_install_command(tool)
+            }
+            
+            if is_available:
+                logger.debug(f"Tool '{tool}' found at: {tool_path}")
+            else:
+                logger.warning(f"Tool '{tool}' not found. Install with: {results[tool]['install_command']}")
+        
+        return results
+    
+    @classmethod
+    def verify_tool_version(cls, tool_name: str, min_version: Optional[str] = None) -> Tuple[bool, str]:
+        """Verify tool version meets requirements.
+        
+        Args:
+            tool_name: Name of the tool
+            min_version: Minimum required version (optional)
+            
+        Returns:
+            Tuple of (meets_requirements, actual_version)
+        """
+        is_available, tool_path = cls.check_tool(tool_name)
+        if not is_available:
+            return False, "Tool not found"
+        
+        try:
+            # Try common version flags
+            for version_flag in ["--version", "-v", "version", "-V"]:
+                try:
+                    result = subprocess.run(
+                        [tool_path, version_flag],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        version_output = result.stdout.strip()
+                        # Extract version number (basic regex for common formats)
+                        import re
+                        version_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', version_output)
+                        if version_match:
+                            version = version_match.group(1)
+                            
+                            if min_version:
+                                # Simple version comparison
+                                from packaging import version as pkg_version
+                                try:
+                                    return pkg_version.parse(version) >= pkg_version.parse(min_version), version
+                                except:
+                                    # Fallback to string comparison if packaging not available
+                                    return version >= min_version, version
+                            
+                            return True, version
+                except subprocess.TimeoutExpired:
+                    continue
+                except Exception:
+                    continue
+            
+            # If we can't get version but tool exists
+            return True, "Unknown version"
+            
+        except Exception as e:
+            logger.error(f"Error checking version for {tool_name}: {e}")
+            return False, "Version check failed"
+    
+    @classmethod
+    def find_alternative_tool(cls, tool_name: str) -> Optional[str]:
+        """Find an alternative tool if the primary one is not available.
+        
+        Args:
+            tool_name: Name of the tool
+            
+        Returns:
+            Name of alternative tool if found, None otherwise
+        """
+        # Check if this tool has aliases
+        for primary, aliases in cls.TOOL_ALIASES.items():
+            if tool_name == primary or tool_name in aliases:
+                for alias in aliases:
+                    if alias != tool_name:
+                        is_available, _ = cls.check_tool(alias)
+                        if is_available:
+                            return alias
+        
+        return None

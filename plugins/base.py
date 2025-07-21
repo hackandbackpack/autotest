@@ -2,8 +2,14 @@
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, Type, Optional, Any, List
+from typing import Dict, Type, Optional, Any, List, Tuple
 import logging
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.utils import ToolChecker
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +32,8 @@ class Plugin(ABC):
         self.author = "AutoTest Framework"
         self.description = "Base plugin"
         self.type = PluginType.SERVICE
+        self.required_tools = []  # List of required external tools
+        self.skip_tool_check = False  # Can be set to skip tool checks
         
     @abstractmethod
     def execute(self, target: str, **kwargs) -> Dict[str, Any]:
@@ -81,6 +89,41 @@ class Plugin(ABC):
             Dictionary of optional parameters and defaults
         """
         return {}
+    
+    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+        """Check if required tools are available.
+        
+        Args:
+            skip_check: If True, skip the tool check
+            
+        Returns:
+            Tuple of (all_available, tool_status_dict)
+        """
+        if skip_check or self.skip_tool_check or not self.required_tools:
+            return True, {}
+        
+        tool_status = ToolChecker.check_required_tools(self.required_tools, skip_check)
+        all_available = all(status["available"] for status in tool_status.values())
+        
+        return all_available, tool_status
+    
+    def get_missing_tools(self) -> List[Dict[str, str]]:
+        """Get list of missing tools with installation instructions.
+        
+        Returns:
+            List of dictionaries with tool name and install command
+        """
+        _, tool_status = self.check_required_tools()
+        missing_tools = []
+        
+        for tool_name, status in tool_status.items():
+            if not status["available"]:
+                missing_tools.append({
+                    "name": tool_name,
+                    "install_command": status["install_command"]
+                })
+        
+        return missing_tools
 
 
 class PluginRegistry:

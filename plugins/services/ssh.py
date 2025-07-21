@@ -5,122 +5,185 @@ SSH service plugin for AutoTest using SSH-Audit.
 import logging
 import subprocess
 import json
+import shutil
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
-from plugins.base import BasePlugin
-from core.task_manager import Task
-from core.output import OutputManager
+from ..base import Plugin, PluginType, plugin
+
+logger = logging.getLogger(__name__)
 
 
-class SSHPlugin(BasePlugin):
+@plugin(name="ssh")
+class SSHPlugin(Plugin):
     """Plugin for SSH configuration auditing using SSH-Audit."""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self):
         """Initialize the SSH plugin."""
-        super().__init__(config)
-        self.name = "ssh"
-        self.description = "SSH configuration auditing using SSH-Audit"
-        self.author = "AutoTest Framework"
+        super().__init__()
+        self.name = "SSH Service Plugin"
         self.version = "1.0.0"
+        self.description = "SSH configuration auditing using SSH-Audit"
+        self.type = PluginType.SERVICE
+        self.author = "AutoTest Framework"
         self.port = 22  # Default SSH port
         
         # Tool configuration
         self.tool_name = "ssh-audit"
         self.required_tools = ["ssh-audit"]
     
-    def validate_tools(self) -> bool:
-        """Check if required tools are available."""
-        import shutil
-        return shutil.which(self.tool_name) is not None
-    
-    def can_handle_service(self, service_info: Dict[str, Any]) -> bool:
-        """Check if this plugin can handle the detected service."""
-        service = service_info.get('service', '').lower()
-        port = service_info.get('port', 0)
+    def _find_tool(self) -> Optional[str]:
+        """Find ssh-audit executable.
         
-        # Handle SSH on any port
-        return 'ssh' in service or port == 22
+        Returns:
+            Path to ssh-audit executable or None
+        """
+        if shutil.which(self.tool_name):
+            return self.tool_name
+        logger.warning("ssh-audit not found in PATH")
+        return None
     
-    def execute_task(self, task: Task, output_manager: OutputManager) -> Dict[str, Any]:
-        """Execute SSH audit task."""
+    def get_required_params(self) -> List[str]:
+        """Get required parameters for SSH plugin.
+        
+        Returns:
+            List of required parameter names
+        """
+        return ["target"]
+    
+    def get_optional_params(self) -> Dict[str, Any]:
+        """Get optional parameters with their default values.
+        
+        Returns:
+            Dictionary of optional parameters and defaults
+        """
+        return {
+            "port": 22,
+            "timeout": 60,
+            "output_dir": "output/ssh"
+        }
+    
+    def validate_params(self, **kwargs) -> bool:
+        """Validate SSH plugin parameters.
+        
+        Args:
+            **kwargs: Parameters to validate
+            
+        Returns:
+            True if parameters are valid
+        """
+        if not kwargs.get("target"):
+            logger.error("Target parameter is required")
+            return False
+        
+        # Validate port
+        port = kwargs.get("port", 22)
+        if not isinstance(port, int) or port < 1 or port > 65535:
+            logger.error(f"Invalid port: {port}")
+            return False
+        
+        return True
+    
+    def execute(self, target: str, **kwargs) -> Dict[str, Any]:
+        """Execute SSH audit using ssh-audit.
+        
+        Args:
+            target: Target host or network
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing test results
+        """
+        if not self.validate_params(target=target, **kwargs):
+            return {"success": False, "error": "Invalid parameters"}
+        
+        # Find tool
+        tool_path = self._find_tool()
+        if not tool_path:
+            return {
+                "success": False,
+                "error": "ssh-audit not found. Please install it first.",
+                "install_command": "pip install ssh-audit"
+            }
+        
+        results = {
+            "success": True,
+            "target": target,
+            "service": "SSH",
+            "findings": [],
+            "errors": []
+        }
+        
         try:
-            logging.info(f"Starting SSH audit on {task.target}:{task.port}")
+            port = kwargs.get("port", 22)
+            timeout = kwargs.get("timeout", 60)
+            output_dir = Path(kwargs.get("output_dir", "output/ssh"))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Starting SSH audit on {target}:{port}")
             
             # Prepare output files
-            json_output = output_manager.get_output_path(
-                f"ssh_{task.target}_{task.port}.json"
-            )
-            txt_output = output_manager.get_output_path(
-                f"ssh_{task.target}_{task.port}.txt"
-            )
+            json_output = output_dir / f"ssh_{target}_{port}.json"
+            txt_output = output_dir / f"ssh_{target}_{port}.txt"
             
             # Build SSH-Audit command for JSON output
             cmd_json = [
-                self.tool_name,
+                tool_path,
                 "--json",
-                "-p", str(task.port),
-                task.target
+                "-p", str(port),
+                target
             ]
             
             # Run SSH-Audit for JSON output
-            logging.debug(f"Running command: {' '.join(cmd_json)}")
+            logger.debug(f"Running command: {' '.join(cmd_json)}")
             result_json = subprocess.run(
                 cmd_json,
                 capture_output=True,
                 text=True,
-                timeout=self.config.get('plugins.ssh.timeout', 60)
+                timeout=timeout
             )
             
             # Save JSON output
             if result_json.stdout:
-                output_manager.write_output(json_output, result_json.stdout)
+                with open(json_output, 'w') as f:
+                    f.write(result_json.stdout)
+                results["json_output"] = str(json_output)
             
             # Run SSH-Audit for text output
             cmd_txt = [
-                self.tool_name,
-                "-p", str(task.port),
-                task.target
+                tool_path,
+                "-p", str(port),
+                target
             ]
             
             result_txt = subprocess.run(
                 cmd_txt,
                 capture_output=True,
                 text=True,
-                timeout=self.config.get('plugins.ssh.timeout', 60)
+                timeout=timeout
             )
             
             # Save text output
             if result_txt.stdout:
-                output_manager.write_output(txt_output, result_txt.stdout)
+                with open(txt_output, 'w') as f:
+                    f.write(result_txt.stdout)
+                results["text_output"] = str(txt_output)
             
             # Parse results
             findings = self._parse_results(result_json.stdout, result_txt.stdout)
-            
-            return {
-                'success': True,
-                'findings': findings,
-                'output_files': {
-                    'json': str(json_output),
-                    'text': str(txt_output)
-                },
-                'command': ' '.join(cmd_json)
-            }
+            results["findings"].extend(findings)
+            results["command"] = ' '.join(cmd_json)
             
         except subprocess.TimeoutExpired:
-            logging.error(f"SSH audit timed out for {task.target}:{task.port}")
-            return {
-                'success': False,
-                'error': 'Scan timed out',
-                'findings': []
-            }
+            logger.error(f"SSH audit timed out for {target}:{port}")
+            results["success"] = False
+            results["errors"].append("Scan timed out")
         except Exception as e:
-            logging.error(f"SSH audit failed for {task.target}:{task.port}: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'findings': []
-            }
+            logger.error(f"SSH audit failed for {target}:{port}: {e}")
+            results["success"] = False
+            results["errors"].append(str(e))
+        
+        return results
     
     def _parse_results(self, json_output: str, text_output: str) -> List[Dict[str, Any]]:
         """Parse SSH-Audit results."""
@@ -215,9 +278,3 @@ class SSHPlugin(BasePlugin):
         
         return findings
     
-    def get_config_template(self) -> Dict[str, Any]:
-        """Return configuration template for this plugin."""
-        return {
-            'enabled': True,
-            'timeout': 60
-        }

@@ -25,7 +25,7 @@ from core.input_parser import InputParser
 from core.discovery import Discovery
 from core.task_manager import TaskManager, Task
 from core.output import OutputManager
-from core.utils import create_directory, get_timestamp
+from core.utils import create_directory, get_timestamp, ToolChecker
 
 # Import plugins
 from plugins.services.smb import SMBPlugin
@@ -108,27 +108,27 @@ class AutoTest:
         # Load service plugins
         try:
             # SMB plugin
-            smb_plugin = SMBPlugin(self.config)
+            smb_plugin = SMBPlugin()
             self.plugins.append(smb_plugin)
             logging.info(f"Loaded plugin: SMB")
             
             # RDP plugin
-            rdp_plugin = RDPPlugin(self.config)
+            rdp_plugin = RDPPlugin()
             self.plugins.append(rdp_plugin)
             logging.info(f"Loaded plugin: RDP")
             
             # SNMP plugin
-            snmp_plugin = SNMPPlugin(self.config)
+            snmp_plugin = SNMPPlugin()
             self.plugins.append(snmp_plugin)
             logging.info(f"Loaded plugin: SNMP")
             
             # SSH plugin
-            ssh_plugin = SSHPlugin(self.config)
+            ssh_plugin = SSHPlugin()
             self.plugins.append(ssh_plugin)
             logging.info(f"Loaded plugin: SSH")
             
             # SSL/TLS plugin
-            ssl_plugin = SSLPlugin(self.config)
+            ssl_plugin = SSLPlugin()
             self.plugins.append(ssl_plugin)
             logging.info(f"Loaded plugin: SSL/TLS")
             
@@ -150,8 +150,27 @@ class AutoTest:
         if not plugin:
             raise AutoTestException(f"No plugin found for task: {task.plugin_name}")
         
-        # Execute the task
-        return plugin.execute_task(task, self.output_manager)
+        # Check if plugin tools are available (unless skipped)
+        if not getattr(plugin, 'skip_tool_check', False):
+            tools_available, tool_status = plugin.check_required_tools()
+            if not tools_available:
+                missing_tools = plugin.get_missing_tools()
+                error_msg = "Missing required tools:\n"
+                for tool in missing_tools:
+                    error_msg += f"  - {tool['name']}: {tool['install_command']}\n"
+                raise AutoTestException(error_msg)
+        
+        # Execute the task using the plugin's execute method
+        # Convert task parameters to kwargs format expected by plugin.execute()
+        kwargs = {
+            'port': task.port,
+            'output_dir': self.output_manager.session_dir
+        }
+        # Add any additional task-specific parameters
+        if hasattr(task, 'params') and task.params:
+            kwargs.update(task.params)
+        
+        return plugin.execute(task.target, **kwargs)
     
     def run_scan(
         self,
@@ -341,6 +360,8 @@ class AutoTest:
 @click.option('-f', '--file', help='Read targets from file')
 @click.option('--nmap-xml', help='Import targets from Nmap XML file')
 @click.option('--masscan-json', help='Import targets from Masscan JSON file')
+@click.option('--skip-tool-check', is_flag=True, help='Skip checking for required tools')
+@click.option('--check-tools', is_flag=True, help='Check all required tools and exit')
 def main(
     targets: tuple,
     config: Optional[str],
@@ -350,7 +371,9 @@ def main(
     log_level: str,
     file: Optional[str],
     nmap_xml: Optional[str],
-    masscan_json: Optional[str]
+    masscan_json: Optional[str],
+    skip_tool_check: bool,
+    check_tools: bool
 ):
     """
     AutoTest - Automated Network Penetration Testing Framework
@@ -383,6 +406,61 @@ def main(
         
         # Load plugins
         app.load_plugins()
+        
+        # Handle tool checking
+        if check_tools:
+            console.print("[bold]Checking required tools...[/bold]\n")
+            all_tools = set()
+            
+            # Collect tools from all plugins
+            for plugin in app.plugins:
+                if hasattr(plugin, 'required_tools'):
+                    all_tools.update(plugin.required_tools)
+            
+            # Add discovery tools
+            all_tools.update(['nmap', 'masscan'])
+            
+            # Check all tools
+            tool_status = ToolChecker.check_required_tools(list(all_tools))
+            
+            # Display results
+            for tool_name, status in tool_status.items():
+                if status['available']:
+                    console.print(f"[+] {tool_name}: [green]Available[/green] at {status['path']}")
+                else:
+                    console.print(f"[-] {tool_name}: [red]Not found[/red]")
+                    console.print(f"  Install with: [yellow]{status['install_command']}[/yellow]")
+            
+            # Summary
+            available_count = sum(1 for s in tool_status.values() if s['available'])
+            total_count = len(tool_status)
+            console.print(f"\n[bold]Summary:[/bold] {available_count}/{total_count} tools available")
+            
+            # Exit after checking
+            sys.exit(0 if available_count == total_count else 1)
+        
+        # Set skip tool check flag for plugins if needed
+        if skip_tool_check:
+            for plugin in app.plugins:
+                if hasattr(plugin, 'skip_tool_check'):
+                    plugin.skip_tool_check = True
+        else:
+            # Check for critical tools (masscan and nmap) unless skipping
+            critical_tools = ['masscan', 'nmap']
+            critical_status = ToolChecker.check_required_tools(critical_tools)
+            missing_critical = []
+            
+            for tool, status in critical_status.items():
+                if not status['available']:
+                    missing_critical.append((tool, status['install_command']))
+            
+            if missing_critical:
+                console.print("[red]Error:[/red] Critical tools missing for discovery phase:")
+                for tool, install_cmd in missing_critical:
+                    console.print(f"  [-] {tool}: [yellow]{install_cmd}[/yellow]")
+                console.print("\nThese tools are required for network discovery.")
+                console.print("Use --skip-tool-check to bypass this check (discovery may fail).")
+                sys.exit(1)
         
         # Parse targets
         input_parser = InputParser()

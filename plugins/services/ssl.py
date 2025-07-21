@@ -5,24 +5,28 @@ SSL/TLS service plugin for AutoTest using SSLyze.
 import logging
 import subprocess
 import json
+import shutil
+import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
-from plugins.base import BasePlugin
-from core.task_manager import Task
-from core.output import OutputManager
+from ..base import Plugin, PluginType, plugin
+
+logger = logging.getLogger(__name__)
 
 
-class SSLPlugin(BasePlugin):
+@plugin(name="ssl")
+class SSLPlugin(Plugin):
     """Plugin for SSL/TLS scanning using SSLyze."""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self):
         """Initialize the SSL plugin."""
-        super().__init__(config)
-        self.name = "ssl"
-        self.description = "SSL/TLS configuration scanning using SSLyze"
-        self.author = "AutoTest Framework"
+        super().__init__()
+        self.name = "SSL/TLS Service Plugin"
         self.version = "1.0.0"
+        self.description = "SSL/TLS configuration scanning using SSLyze"
+        self.type = PluginType.SERVICE
+        self.author = "AutoTest Framework"
         
         # Tool configuration
         self.tool_name = "sslyze"
@@ -31,91 +35,144 @@ class SSLPlugin(BasePlugin):
         # Common SSL/TLS ports
         self.ssl_ports = [443, 8443, 9443, 465, 993, 995, 636, 989, 990, 5986]
     
-    def validate_tools(self) -> bool:
-        """Check if required tools are available."""
-        import shutil
-        return shutil.which(self.tool_name) is not None
-    
-    def can_handle_service(self, service_info: Dict[str, Any]) -> bool:
-        """Check if this plugin can handle the detected service."""
-        service = service_info.get('service', '').lower()
-        port = service_info.get('port', 0)
+    def _find_tool(self) -> Optional[str]:
+        """Find sslyze executable.
         
-        # Handle HTTPS, SSL/TLS services, or common SSL ports
-        ssl_keywords = ['https', 'ssl', 'tls', 'secure']
-        return any(keyword in service for keyword in ssl_keywords) or port in self.ssl_ports
+        Returns:
+            Path to sslyze executable or None
+        """
+        if shutil.which(self.tool_name):
+            return self.tool_name
+        logger.warning("sslyze not found in PATH")
+        return None
     
-    def execute_task(self, task: Task, output_manager: OutputManager) -> Dict[str, Any]:
+    def get_required_params(self) -> List[str]:
+        """Get required parameters for SSL plugin.
+        
+        Returns:
+            List of required parameter names
+        """
+        return ["target"]
+    
+    def get_optional_params(self) -> Dict[str, Any]:
+        """Get optional parameters with their default values.
+        
+        Returns:
+            Dictionary of optional parameters and defaults
+        """
+        return {
+            "port": 443,
+            "timeout": 300,
+            "output_dir": "output/ssl",
+            "heartbleed": True,
+            "compression": True,
+            "fallback": True
+        }
+    
+    def validate_params(self, **kwargs) -> bool:
+        """Validate SSL plugin parameters.
+        
+        Args:
+            **kwargs: Parameters to validate
+            
+        Returns:
+            True if parameters are valid
+        """
+        if not kwargs.get("target"):
+            logger.error("Target parameter is required")
+            return False
+        
+        # Validate port
+        port = kwargs.get("port", 443)
+        if not isinstance(port, int) or port < 1 or port > 65535:
+            logger.error(f"Invalid port: {port}")
+            return False
+        
+        return True
+    
+    def execute(self, target: str, **kwargs) -> Dict[str, Any]:
         """Execute SSL/TLS scan task."""
+        if not self.validate_params(target=target, **kwargs):
+            return {"success": False, "error": "Invalid parameters"}
+        
+        # Find tool
+        tool_path = self._find_tool()
+        if not tool_path:
+            return {
+                "success": False,
+                "error": "sslyze not found. Please install it first.",
+                "install_command": "pip install sslyze"
+            }
+        
+        results = {
+            "success": True,
+            "target": target,
+            "service": "SSL/TLS",
+            "findings": [],
+            "errors": []
+        }
+        
         try:
-            logging.info(f"Starting SSL/TLS scan on {task.target}:{task.port}")
+            port = kwargs.get("port", 443)
+            timeout = kwargs.get("timeout", 300)
+            output_dir = Path(kwargs.get("output_dir", "output/ssl"))
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Starting SSL/TLS scan on {target}:{port}")
             
             # Prepare output files
-            json_output = output_manager.get_output_path(
-                f"ssl_{task.target}_{task.port}.json"
-            )
-            txt_output = output_manager.get_output_path(
-                f"ssl_{task.target}_{task.port}.txt"
-            )
+            json_output = output_dir / f"ssl_{target}_{port}.json"
+            txt_output = output_dir / f"ssl_{target}_{port}.txt"
             
             # Build SSLyze command for JSON output
             cmd = [
-                self.tool_name,
+                tool_path,
                 "--json_out", str(json_output),
                 "--regular",  # Regular scan (includes cipher suites, protocols, etc.)
-                f"{task.target}:{task.port}"
+                f"{target}:{port}"
             ]
             
-            # Add additional scan options based on config
-            if self.config.get('plugins.ssl.heartbleed', True):
+            # Add additional scan options based on kwargs
+            if kwargs.get('heartbleed', True):
                 cmd.append("--heartbleed")
             
-            if self.config.get('plugins.ssl.compression', True):
+            if kwargs.get('compression', True):
                 cmd.append("--compression")
             
-            if self.config.get('plugins.ssl.fallback', True):
+            if kwargs.get('fallback', True):
                 cmd.append("--fallback")
             
             # Run SSLyze
-            logging.debug(f"Running command: {' '.join(cmd)}")
+            logger.debug(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=self.config.get('plugins.ssl.timeout', 300)
+                timeout=timeout
             )
             
             # Save text output
             if result.stdout:
-                output_manager.write_output(txt_output, result.stdout)
+                with open(txt_output, 'w') as f:
+                    f.write(result.stdout)
+                results["text_output"] = str(txt_output)
             
             # Parse results
             findings = self._parse_results(json_output, result.stdout)
-            
-            return {
-                'success': True,
-                'findings': findings,
-                'output_files': {
-                    'json': str(json_output),
-                    'text': str(txt_output)
-                },
-                'command': ' '.join(cmd)
-            }
+            results["findings"].extend(findings)
+            results["json_output"] = str(json_output)
+            results["command"] = ' '.join(cmd)
             
         except subprocess.TimeoutExpired:
-            logging.error(f"SSL/TLS scan timed out for {task.target}:{task.port}")
-            return {
-                'success': False,
-                'error': 'Scan timed out',
-                'findings': []
-            }
+            logger.error(f"SSL/TLS scan timed out for {target}:{port}")
+            results["success"] = False
+            results["errors"].append("Scan timed out")
         except Exception as e:
-            logging.error(f"SSL/TLS scan failed for {task.target}:{task.port}: {e}")
-            return {
-                'success': False,
-                'error': str(e),
-                'findings': []
-            }
+            logger.error(f"SSL/TLS scan failed for {target}:{port}: {e}")
+            results["success"] = False
+            results["errors"].append(str(e))
+        
+        return results
     
     def _parse_results(self, json_file: Path, text_output: str) -> List[Dict[str, Any]]:
         """Parse SSLyze results."""
@@ -231,7 +288,6 @@ class SSLPlugin(BasePlugin):
             # Check certificate expiration
             leaf_cert = deployment.get('received_certificate_chain', [{}])[0]
             if leaf_cert.get('not_valid_after'):
-                import datetime
                 try:
                     expiry = datetime.datetime.fromisoformat(leaf_cert['not_valid_after'].replace('Z', '+00:00'))
                     now = datetime.datetime.now(datetime.timezone.utc)
@@ -278,12 +334,3 @@ class SSLPlugin(BasePlugin):
                     'details': {'raw': line}
                 })
     
-    def get_config_template(self) -> Dict[str, Any]:
-        """Return configuration template for this plugin."""
-        return {
-            'enabled': True,
-            'timeout': 300,
-            'heartbleed': True,
-            'compression': True,
-            'fallback': True
-        }
