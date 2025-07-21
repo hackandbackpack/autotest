@@ -162,12 +162,75 @@ class ToolInstaller:
         
         return True
     
+    def install_onesixtyone(self) -> bool:
+        """Install OneSixtyOne SNMP scanner."""
+        if self.check_tool("onesixtyone"):
+            logger.info("[OK] OneSixtyOne is already installed")
+            return True
+        
+        logger.info("Installing OneSixtyOne...")
+        
+        if self.distro in ['debian', 'ubuntu', 'kali']:
+            # Try package manager first
+            if self.run_command(['apt-get', 'install', '-y', 'onesixtyone'], use_sudo=True):
+                return True
+        
+        # Fallback to building from source
+        logger.info("Building OneSixtyOne from source...")
+        commands = [
+            ['git', 'clone', 'https://github.com/trailofbits/onesixtyone.git', '/tmp/onesixtyone'],
+            ['make', '-C', '/tmp/onesixtyone'],
+            ['cp', '/tmp/onesixtyone/onesixtyone', '/usr/local/bin/'],
+            ['rm', '-rf', '/tmp/onesixtyone']
+        ]
+        
+        for i, cmd in enumerate(commands):
+            use_sudo = (i == 2)  # Only cp command needs sudo
+            if not self.run_command(cmd, use_sudo=use_sudo):
+                logger.error("Failed to build OneSixtyOne from source")
+                return False
+        
+        return True
+    
+    def install_ssh_audit(self) -> bool:
+        """Install SSH-Audit."""
+        if self.check_tool("ssh-audit --help"):
+            logger.info("[OK] SSH-Audit is already installed")
+            return True
+        
+        logger.info("Installing SSH-Audit...")
+        
+        # SSH-Audit is a Python tool, install via pip
+        if not self.run_command(['pip3', 'install', 'ssh-audit']):
+            logger.error("Failed to install SSH-Audit")
+            return False
+        
+        return True
+    
+    def install_sslyze(self) -> bool:
+        """Install SSLyze."""
+        if self.check_tool("sslyze --help"):
+            logger.info("[OK] SSLyze is already installed")
+            return True
+        
+        logger.info("Installing SSLyze...")
+        
+        # SSLyze is a Python tool, install via pip
+        if not self.run_command(['pip3', 'install', 'sslyze']):
+            logger.error("Failed to install SSLyze")
+            return False
+        
+        return True
+    
     def check_all_tools(self) -> dict:
         """Check status of all required tools."""
         tools = {
             'masscan': 'masscan --version',
             'nmap': 'nmap --version',
-            'netexec': 'netexec --version'
+            'netexec': 'netexec --version',
+            'onesixtyone': 'onesixtyone',
+            'ssh-audit': 'ssh-audit --help',
+            'sslyze': 'sslyze --help'
         }
         
         status = {}
@@ -199,6 +262,15 @@ class ToolInstaller:
         if not self.install_netexec():
             success = False
         
+        if not self.install_onesixtyone():
+            success = False
+        
+        if not self.install_ssh_audit():
+            success = False
+        
+        if not self.install_sslyze():
+            success = False
+        
         # Final status check
         logger.info("\nFinal tool status:")
         final_status = self.check_all_tools()
@@ -223,14 +295,17 @@ class ToolInstaller:
 def main():
     """Main function."""
     print("""
-+-------------------------------------------+
-|          AutoTest Tool Installer          |
-|                                           |
-|  This script will install:                |
-|  * masscan (fast port scanner)            |
-|  * nmap (network mapper)                  |
-|  * netexec (network service enumeration)  |
-+-------------------------------------------+
++----------------------------------------------+
+|           AutoTest Tool Installer            |
+|                                              |
+|  This script will install:                   |
+|  * masscan (fast port scanner)               |
+|  * nmap (network mapper)                     |
+|  * netexec (network service enumeration)     |
+|  * onesixtyone (SNMP scanner)                |
+|  * ssh-audit (SSH configuration auditor)     |
+|  * sslyze (SSL/TLS scanner)                  |
++----------------------------------------------+
 """)
     
     if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help']:

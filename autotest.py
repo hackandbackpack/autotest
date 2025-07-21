@@ -30,6 +30,9 @@ from core.utils import create_directory, get_timestamp
 # Import plugins
 from plugins.services.smb import SMBPlugin
 from plugins.services.rdp import RDPPlugin
+from plugins.services.snmp import SNMPPlugin
+from plugins.services.ssh import SSHPlugin
+from plugins.services.ssl import SSLPlugin
 
 # Import UI (optional - not available on Windows)
 try:
@@ -79,7 +82,7 @@ class AutoTest:
     def __init__(self, config_path: Optional[str] = None):
         """Initialize AutoTest."""
         self.config = Config(config_path)
-        self.config.validate_config()
+        self.config.validate()
         
         self.input_parser = InputParser()
         self.discovery = None
@@ -113,6 +116,21 @@ class AutoTest:
             rdp_plugin = RDPPlugin(self.config)
             self.plugins.append(rdp_plugin)
             logging.info(f"Loaded plugin: RDP")
+            
+            # SNMP plugin
+            snmp_plugin = SNMPPlugin(self.config)
+            self.plugins.append(snmp_plugin)
+            logging.info(f"Loaded plugin: SNMP")
+            
+            # SSH plugin
+            ssh_plugin = SSHPlugin(self.config)
+            self.plugins.append(ssh_plugin)
+            logging.info(f"Loaded plugin: SSH")
+            
+            # SSL/TLS plugin
+            ssl_plugin = SSLPlugin(self.config)
+            self.plugins.append(ssl_plugin)
+            logging.info(f"Loaded plugin: SSL/TLS")
             
         except Exception as e:
             logging.error(f"Failed to load plugins: {e}")
