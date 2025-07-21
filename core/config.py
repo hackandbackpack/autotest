@@ -242,6 +242,51 @@ class Config:
         except Exception as e:
             raise ConfigurationError(f"Error saving configuration: {e}")
     
+    def save_runtime_config(self, output_dir: str) -> None:
+        """
+        Save runtime configuration snapshot to the output directory.
+        
+        This creates a record of the configuration used for this specific scan,
+        including metadata about the scan execution.
+        
+        Args:
+            output_dir: Directory to save the runtime configuration
+            
+        Raises:
+            ConfigurationError: If save fails
+        """
+        import datetime
+        
+        try:
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create runtime config with metadata
+            runtime_config = {
+                "metadata": {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "config_file": self._config_file,
+                    "output_directory": output_dir,
+                    "autotest_version": "1.0.0"
+                },
+                "configuration": self._config
+            }
+            
+            # Save to timestamped file
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            config_path = os.path.join(output_dir, f"runtime_config_{timestamp}.json")
+            
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(runtime_config, f, indent=2, ensure_ascii=False)
+                
+            # Also save a copy as latest_config.json for easy access
+            latest_path = os.path.join(output_dir, "latest_config.json")
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                json.dump(runtime_config, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            raise ConfigurationError(f"Error saving runtime configuration: {e}")
+    
     def validate(self) -> None:
         """
         Validate configuration values.

@@ -348,6 +348,48 @@ class AutoTest:
         self.shutdown_event.set()
 
 
+def _is_likely_file_path(target: str) -> bool:
+    """
+    Determine if a target string is likely a file path.
+    
+    Args:
+        target: The target string to check
+        
+    Returns:
+        True if the target appears to be a file path
+    """
+    # Check for absolute paths
+    if target.startswith('/') or (len(target) > 2 and target[1:3] == ':\\'):
+        return True
+    
+    # Check for relative paths
+    if target.startswith('./') or target.startswith('../'):
+        return True
+    
+    # Exclude URLs
+    if target.startswith(('http://', 'https://', 'ftp://', 'file://')):
+        return False
+    
+    # Check for path separators (but not in hostnames like example.com/path)
+    if '/' in target or '\\' in target:
+        # Additional check: if it contains path separators and ends with common file extensions
+        lower_target = target.lower()
+        file_extensions = ['.txt', '.lst', '.list', '.targets', '.hosts', '.ips']
+        if any(lower_target.endswith(ext) for ext in file_extensions):
+            return True
+        # Or if it has multiple path components
+        if target.count('/') > 1 or target.count('\\') > 1:
+            return True
+    
+    # Check for common target file extensions even without path separators
+    lower_target = target.lower()
+    common_extensions = ['.txt', '.lst', '.list', '.targets', '.hosts', '.ips', '.scope']
+    if any(lower_target.endswith(ext) for ext in common_extensions):
+        return True
+    
+    return False
+
+
 @click.command()
 @click.argument('targets', nargs=-1, required=False)
 @click.option('-c', '--config', help='Path to configuration file')
@@ -466,9 +508,26 @@ def main(
         input_parser = InputParser()
         all_targets = []
         
-        # Add command line targets
+        # Add command line targets with smart file detection
         if targets:
-            all_targets.extend(targets)
+            for target in targets:
+                # Check if this looks like a file path
+                if _is_likely_file_path(target):
+                    # Check if file exists
+                    if os.path.isfile(target):
+                        console.print(f"[yellow]Auto-detected file:[/yellow] {target}")
+                        console.print("[dim]Tip: You can also use -f flag or @filename syntax[/dim]")
+                        # Convert to @filename format for InputParser
+                        file_targets = input_parser.parse_targets(f"@{target}")
+                        all_targets.extend(file_targets)
+                    else:
+                        # File-like path but doesn't exist
+                        console.print(f"[red]Error:[/red] '{target}' looks like a file path but doesn't exist")
+                        console.print("[yellow]Tip:[/yellow] Use -f flag for files, or check the path")
+                        sys.exit(1)
+                else:
+                    # Regular target (IP, CIDR, hostname)
+                    all_targets.append(target)
         
         # Add targets from file
         if file:
@@ -497,8 +556,19 @@ def main(
                 parsed = input_parser.parse_targets(target)
                 processed_targets.extend(parsed)
             except Exception as e:
-                logging.warning(f"Failed to parse target '{target}': {e}")
-                continue
+                error_msg = str(e)
+                # Provide helpful error message for file-like paths
+                if "Cannot resolve hostname" in error_msg and _is_likely_file_path(target):
+                    console.print(f"[red]Error:[/red] Failed to parse '{target}'")
+                    console.print(f"[yellow]This looks like a file path.[/yellow] Did you mean to use:")
+                    console.print(f"  - [green]autotest -f {target}[/green]")
+                    console.print(f"  - [green]autotest @{target}[/green]")
+                    if not os.path.isfile(target):
+                        console.print(f"[dim]Note: File '{target}' does not exist[/dim]")
+                    sys.exit(1)
+                else:
+                    logging.warning(f"Failed to parse target '{target}': {e}")
+                    continue
         
         # Remove duplicates while preserving order
         seen = set()
