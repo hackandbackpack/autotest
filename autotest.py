@@ -10,6 +10,7 @@ import os
 import logging
 import signal
 import threading
+import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import click
@@ -23,7 +24,7 @@ from core.config import Config
 from core.exceptions import AutoTestException
 from core.input_parser import InputParser
 from core.discovery import Discovery
-from core.task_manager import TaskManager, Task
+from core.task_manager import TaskManager, Task, TaskStatus
 from core.output import OutputManager
 from core.utils import create_directory, get_timestamp, ToolChecker
 
@@ -172,6 +173,63 @@ class AutoTest:
         
         return plugin.execute(task.target, **kwargs)
     
+    def _process_tasks(self) -> None:
+        """Process tasks from the task manager queue."""
+        import threading
+        
+        def worker():
+            """Worker thread to process tasks."""
+            while not self.shutdown_event.is_set():
+                # Get pending tasks
+                with self.task_manager.lock:
+                    pending_tasks = [
+                        task for task in self.task_manager.tasks.values()
+                        if task.status == TaskStatus.PENDING and
+                        self.task_manager._are_dependencies_met(task)
+                    ]
+                
+                if not pending_tasks:
+                    time.sleep(0.1)
+                    continue
+                
+                # Process each pending task
+                for task in pending_tasks:
+                    if self.shutdown_event.is_set():
+                        break
+                    
+                    try:
+                        # Mark as running
+                        with self.task_manager.lock:
+                            task.status = TaskStatus.RUNNING
+                            task.start_time = time.time()
+                        
+                        # Execute the task
+                        result = self.execute_plugin_task(task)
+                        
+                        # Mark as completed
+                        with self.task_manager.lock:
+                            task.status = TaskStatus.COMPLETED
+                            task.result = result
+                            task.end_time = time.time()
+                            self.task_manager.completed_tasks.append(task)
+                    
+                    except Exception as e:
+                        # Mark as failed
+                        with self.task_manager.lock:
+                            task.status = TaskStatus.FAILED
+                            task.error = e
+                            task.end_time = time.time()
+                            self.task_manager.failed_tasks.append(task)
+                        logging.error(f"Task {task.name} failed: {e}")
+        
+        # Start worker threads
+        num_workers = self.config.get('max_threads', 10)
+        workers = []
+        for _ in range(num_workers):
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            workers.append(t)
+    
     def run_scan(
         self,
         targets: List[str],
@@ -243,7 +301,10 @@ class AutoTest:
                 logging.info("Terminal UI not available on this platform")
             
             # Start task execution
-            self.task_manager.start(self.execute_plugin_task)
+            self.task_manager.start()
+            
+            # Process tasks using the execute_plugin_task callback
+            self._process_tasks()
             
             # Wait for completion
             logging.info("Waiting for tasks to complete...")

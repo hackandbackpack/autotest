@@ -343,3 +343,7 @@ class AutoTestTUI:
     def set_current_target(self, target: str):
         """Set current target being processed"""
         self.current_target = target
+    
+    def run(self):
+        """Run the TUI - alias for start() for compatibility"""
+        self.start()
