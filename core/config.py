@@ -9,6 +9,14 @@ from pathlib import Path
 from .exceptions import ConfigurationError
 
 
+class PathEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles Path objects."""
+    def default(self, obj):
+        if isinstance(obj, Path):
+            return str(obj)
+        return super().default(obj)
+
+
 class Config:
     """
     Configuration manager for AutoTest.
@@ -237,7 +245,7 @@ class Config:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             
             with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(self._config, f, indent=2, ensure_ascii=False)
+                json.dump(self._config, f, indent=2, ensure_ascii=False, cls=PathEncoder)
                 
         except Exception as e:
             raise ConfigurationError(f"Error saving configuration: {e}")
@@ -258,15 +266,18 @@ class Config:
         import datetime
         
         try:
+            # Convert Path to string if necessary
+            output_dir_str = str(output_dir) if isinstance(output_dir, Path) else output_dir
+            
             # Ensure output directory exists
-            os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(output_dir_str, exist_ok=True)
             
             # Create runtime config with metadata
             runtime_config = {
                 "metadata": {
                     "timestamp": datetime.datetime.now().isoformat(),
                     "config_file": self._config_file,
-                    "output_directory": output_dir,
+                    "output_directory": output_dir_str,
                     "autotest_version": "1.0.0"
                 },
                 "configuration": self._config
@@ -274,15 +285,15 @@ class Config:
             
             # Save to timestamped file
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            config_path = os.path.join(output_dir, f"runtime_config_{timestamp}.json")
+            config_path = os.path.join(output_dir_str, f"runtime_config_{timestamp}.json")
             
             with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(runtime_config, f, indent=2, ensure_ascii=False)
+                json.dump(runtime_config, f, indent=2, ensure_ascii=False, cls=PathEncoder)
                 
             # Also save a copy as latest_config.json for easy access
-            latest_path = os.path.join(output_dir, "latest_config.json")
+            latest_path = os.path.join(output_dir_str, "latest_config.json")
             with open(latest_path, 'w', encoding='utf-8') as f:
-                json.dump(runtime_config, f, indent=2, ensure_ascii=False)
+                json.dump(runtime_config, f, indent=2, ensure_ascii=False, cls=PathEncoder)
                 
         except Exception as e:
             raise ConfigurationError(f"Error saving runtime configuration: {e}")

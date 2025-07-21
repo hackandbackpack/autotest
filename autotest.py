@@ -195,7 +195,7 @@ class AutoTest:
         
         # Save configuration
         if hasattr(self.config, 'save_runtime_config'):
-            self.config.save_runtime_config(output_dir)
+            self.config.save_runtime_config(str(output_dir))
         else:
             logging.warning("Config.save_runtime_config not available, skipping runtime config save")
         
