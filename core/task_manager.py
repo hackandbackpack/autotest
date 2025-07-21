@@ -73,6 +73,9 @@ class TaskManager:
         self.executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self.futures: Dict[str, concurrent.futures.Future] = {}
         self.stats: Dict[str, Any] = {}
+        self.completed_tasks: List[Task] = []
+        self.failed_tasks: List[Task] = []
+        self.running = False
     
     def add_task(self, task: Task) -> None:
         """
@@ -123,6 +126,7 @@ class TaskManager:
         
         self.stop_event.clear()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        self.running = True
         
         # Initialize stats
         import time
@@ -140,6 +144,7 @@ class TaskManager:
             wait: Whether to wait for running tasks to complete
         """
         self.stop_event.set()
+        self.running = False
         
         # Update end time in stats
         import time
@@ -405,9 +410,11 @@ class TaskManager:
                     task.result = future.result()
                     task.status = TaskStatus.COMPLETED
                     self.results[task.id] = task.result
+                    self.completed_tasks.append(task)
             except Exception as e:
                 task.status = TaskStatus.FAILED
                 task.error = e
+                self.failed_tasks.append(task)
             
             # Remove from futures
             self.futures.pop(task.id, None)
@@ -464,3 +471,38 @@ class TaskManager:
                 visit(task_id)
         
         return stack
+    
+    def create_tasks_from_discovery(self, discovered_hosts: Dict[str, Any], plugins: List[Any]) -> None:
+        """
+        Create tasks based on discovery results and available plugins.
+        
+        Args:
+            discovered_hosts: Dictionary of discovered hosts with their open ports
+            plugins: List of available plugins
+        """
+        import uuid
+        
+        # Create tasks for each host/port/service combination
+        for host, host_info in discovered_hosts.items():
+            if isinstance(host_info, dict) and 'ports' in host_info:
+                for port in host_info['ports']:
+                    service = host_info.get('services', {}).get(str(port), 'unknown')
+                    
+                    # Find matching plugins for this service
+                    for plugin in plugins:
+                        if hasattr(plugin, 'can_handle') and plugin.can_handle(service, port):
+                            # Create a task for this plugin
+                            task = Task(
+                                id=str(uuid.uuid4()),
+                                name=f"{plugin.name}_{host}:{port}",
+                                function=None,  # Will be handled by execute_plugin_task
+                                priority=TaskPriority.NORMAL
+                            )
+                            
+                            # Add custom attributes for plugin execution
+                            task.target = host
+                            task.port = port
+                            task.service = service
+                            task.plugin_name = plugin.name
+                            
+                            self.add_task(task)

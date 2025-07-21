@@ -65,21 +65,29 @@ class Discovery:
         except Exception:
             return False
     
-    def discover_hosts(self, targets: List[str], 
-                      progress_callback: Optional[callable] = None) -> List[str]:
+    def discover_hosts(self, targets: List[str], ports: Optional[str] = None,
+                      progress_callback: Optional[callable] = None) -> Dict[str, Any]:
         """
-        Discover live hosts from a list of targets.
+        Discover live hosts and their open ports from a list of targets.
         
         Args:
-            targets: List of target IP addresses
+            targets: List of target hosts (IPs or hostnames)
+            ports: Port specification string (e.g., "22,80,443" or "1-1000")
             progress_callback: Optional callback for progress updates
             
         Returns:
-            List of live host IP addresses
+            Dictionary of discovered hosts with their open ports and services
         """
-        live_hosts = []
+        discovered_hosts = {}
         total = len(targets)
         completed = 0
+        
+        # Parse port specification
+        if ports:
+            port_list = self._parse_port_spec(ports)
+        else:
+            # Use default ports from config
+            port_list = [22, 80, 443, 445, 3389, 8080]
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
             # Submit all ping tasks
@@ -95,7 +103,18 @@ class Discovery:
                 
                 try:
                     if future.result():
-                        live_hosts.append(host)
+                        # Host is alive, scan its ports
+                        open_ports = self.scan_ports(host, port_list)
+                        if open_ports:
+                            discovered_hosts[host] = {
+                                'ports': open_ports,
+                                'services': {}
+                            }
+                            
+                            # Try to identify services
+                            for port in open_ports:
+                                service = self.get_service_name(port)
+                                discovered_hosts[host]['services'][str(port)] = service
                 except Exception:
                     # Skip hosts that cause errors
                     pass
@@ -104,7 +123,14 @@ class Discovery:
                 if progress_callback:
                     progress_callback(completed, total, host)
         
-        return sorted(live_hosts)
+        # Store for export
+        self._discovered_hosts = discovered_hosts
+        self._total_hosts = total
+        self._live_hosts_count = len(discovered_hosts)
+        self._total_ports = len(port_list) * len(discovered_hosts)
+        self._open_ports_count = sum(len(h['ports']) for h in discovered_hosts.values())
+        
+        return discovered_hosts
     
     def scan_port(self, host: str, port: int, timeout: Optional[float] = None) -> bool:
         """
@@ -388,3 +414,67 @@ class Discovery:
             results['os_guess'] = self.identify_os(host, open_ports)
         
         return results
+    
+    def export_discovery_results(self, filepath: str) -> None:
+        """
+        Export discovery results to a JSON file.
+        
+        Args:
+            filepath: Path to save the results
+        """
+        import json
+        
+        # Gather all discovery results
+        results = {
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'scan_summary': {
+                'total_hosts_scanned': getattr(self, '_total_hosts', 0),
+                'live_hosts_found': getattr(self, '_live_hosts_count', 0),
+                'total_ports_scanned': getattr(self, '_total_ports', 0),
+                'open_ports_found': getattr(self, '_open_ports_count', 0)
+            },
+            'hosts': getattr(self, '_discovered_hosts', {}),
+            'scan_configuration': {
+                'max_threads': self.max_threads,
+                'timeout': self.timeout
+            }
+        }
+        
+        # Write to file
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, default=str)
+    
+    def _parse_port_spec(self, port_spec: str) -> List[int]:
+        """
+        Parse a port specification string into a list of ports.
+        
+        Args:
+            port_spec: Port specification (e.g., "22,80,443" or "1-1000")
+            
+        Returns:
+            List of port numbers
+        """
+        ports = []
+        
+        # Split by comma
+        for part in port_spec.split(','):
+            part = part.strip()
+            
+            # Check for range
+            if '-' in part:
+                start, end = part.split('-', 1)
+                try:
+                    start_port = int(start.strip())
+                    end_port = int(end.strip())
+                    ports.extend(range(start_port, end_port + 1))
+                except ValueError:
+                    continue
+            else:
+                # Single port
+                try:
+                    ports.append(int(part))
+                except ValueError:
+                    continue
+        
+        # Remove duplicates and sort
+        return sorted(list(set(ports)))

@@ -426,3 +426,38 @@ class OutputManager:
         lines.append("4. Schedule regular security assessments")
         
         return "\n".join(lines)
+    
+    def create_summary_log(self) -> str:
+        """
+        Create a summary log of the scanning session.
+        
+        Returns:
+            Path to the summary log file
+        """
+        summary_lines = []
+        summary_lines.append("AutoTest Session Summary")
+        summary_lines.append("=" * 50)
+        summary_lines.append(f"Session ID: {self.session_id}")
+        summary_lines.append(f"Output Directory: {self.session_dir}")
+        summary_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        summary_lines.append("")
+        
+        # List all generated files
+        summary_lines.append("Generated Files:")
+        summary_lines.append("-" * 30)
+        
+        for root, dirs, files in os.walk(self.session_dir):
+            for file in sorted(files):
+                rel_path = os.path.relpath(os.path.join(root, file), self.session_dir)
+                file_size = os.path.getsize(os.path.join(root, file))
+                summary_lines.append(f"  {rel_path} ({file_size} bytes)")
+        
+        summary_lines.append("")
+        summary_lines.append("Session completed successfully.")
+        
+        # Save summary
+        summary_content = "\n".join(summary_lines)
+        summary_path = os.path.join(self.session_dir, "session_summary.txt")
+        self._save_plain(summary_path, summary_content)
+        
+        return summary_path

@@ -206,7 +206,10 @@ class AutoTest:
         try:
             # Phase 1: Discovery
             logging.info("Phase 1: Host and port discovery")
-            self.discovery = Discovery(self.config)
+            self.discovery = Discovery(
+                max_threads=self.config.get('max_threads', 10),
+                timeout=self.config.get('discovery.ping_timeout', 1.0)
+            )
             discovered_hosts = self.discovery.discover_hosts(targets, ports)
             
             if not discovered_hosts:
