@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from core.config import Config, ValidationError
+from core.config import Config
+from core.exceptions import ConfigurationError
 from core.dispatcher import Dispatcher
 from core.results import ResultsManager
 from ui.tui import AutoTestTUI, TaskStatus
@@ -68,7 +69,7 @@ class AutoTest:
         try:
             self.config = Config.from_file(config_path)
             self.logger.info(f"Configuration loaded from {config_path}")
-        except ValidationError as e:
+        except ConfigurationError as e:
             self.logger.error(f"Configuration validation failed: {e}")
             sys.exit(1)
         except Exception as e:
