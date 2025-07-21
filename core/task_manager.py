@@ -72,6 +72,7 @@ class TaskManager:
         self.stop_event = threading.Event()
         self.executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self.futures: Dict[str, concurrent.futures.Future] = {}
+        self.stats: Dict[str, Any] = {}
     
     def add_task(self, task: Task) -> None:
         """
@@ -123,6 +124,10 @@ class TaskManager:
         self.stop_event.clear()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         
+        # Initialize stats
+        import time
+        self.stats['start_time'] = time.time()
+        
         # Start the scheduler thread
         scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
         scheduler_thread.start()
@@ -135,6 +140,10 @@ class TaskManager:
             wait: Whether to wait for running tasks to complete
         """
         self.stop_event.set()
+        
+        # Update end time in stats
+        import time
+        self.stats['end_time'] = time.time()
         
         if self.executor:
             if wait:

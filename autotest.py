@@ -194,7 +194,10 @@ class AutoTest:
         self.output_manager = OutputManager(str(output_dir))
         
         # Save configuration
-        self.config.save_runtime_config(output_dir)
+        if hasattr(self.config, 'save_runtime_config'):
+            self.config.save_runtime_config(output_dir)
+        else:
+            logging.warning("Config.save_runtime_config not available, skipping runtime config save")
         
         # Setup log file in output directory
         log_file = output_dir / "autotest.log"
@@ -558,12 +561,21 @@ def main(
             except Exception as e:
                 error_msg = str(e)
                 # Provide helpful error message for file-like paths
-                if "Cannot resolve hostname" in error_msg and _is_likely_file_path(target):
+                if ("Invalid target specification" in error_msg or "Cannot resolve hostname" in error_msg) and _is_likely_file_path(target):
                     console.print(f"[red]Error:[/red] Failed to parse '{target}'")
                     console.print(f"[yellow]This looks like a file path.[/yellow] Did you mean to use:")
-                    console.print(f"  - [green]autotest -f {target}[/green]")
-                    console.print(f"  - [green]autotest @{target}[/green]")
-                    if not os.path.isfile(target):
+                    console.print(f"  - [green]python3 autotest.py -f {target}[/green]")
+                    if os.path.isfile(target):
+                        console.print(f"[dim]The file exists. Autotest will now try to read it.[/dim]")
+                        # Try to parse as file
+                        try:
+                            file_targets = input_parser.parse_targets(f"@{target}")
+                            processed_targets.extend(file_targets)
+                            console.print(f"[green]Successfully loaded {len(file_targets)} targets from {target}[/green]")
+                            continue
+                        except Exception as file_e:
+                            console.print(f"[red]Failed to read file: {file_e}[/red]")
+                    else:
                         console.print(f"[dim]Note: File '{target}' does not exist[/dim]")
                     sys.exit(1)
                 else:
