@@ -35,8 +35,26 @@ class ToolInstaller:
         try:
             # Try to read from os-release
             with open('/etc/os-release', 'r') as f:
-                for line in f:
-                    if line.startswith('ID='):
+                content = f.read().lower()
+                # Check for specific distros first
+                if 'kali' in content:
+                    return 'kali'
+                elif 'ubuntu' in content:
+                    return 'ubuntu'
+                elif 'debian' in content:
+                    return 'debian'
+                elif 'fedora' in content:
+                    return 'fedora'
+                elif 'centos' in content:
+                    return 'centos'
+                elif 'rhel' in content or 'red hat' in content:
+                    return 'rhel'
+                elif 'arch' in content:
+                    return 'arch'
+                
+                # Fallback to ID field
+                for line in content.splitlines():
+                    if line.startswith('id='):
                         return line.split('=')[1].strip().strip('"')
         except:
             pass
@@ -200,12 +218,26 @@ class ToolInstaller:
         
         logger.info("Installing SSH-Audit...")
         
-        # SSH-Audit is a Python tool, install via pip
-        if not self.run_command(['pip3', 'install', 'ssh-audit']):
-            logger.error("Failed to install SSH-Audit")
-            return False
+        # Check if pipx is available (preferred for Python tools)
+        if shutil.which('pipx'):
+            logger.info("Installing SSH-Audit via pipx...")
+            if self.run_command(['pipx', 'install', 'ssh-audit']):
+                return True
         
-        return True
+        # Try system package manager for Kali/Debian
+        if self.distro in ['debian', 'ubuntu', 'kali']:
+            logger.info("Trying apt package manager...")
+            if self.run_command(['apt-get', 'install', '-y', 'ssh-audit'], use_sudo=True):
+                return True
+        
+        # Last resort: pip with --break-system-packages flag
+        logger.warning("Attempting pip install with --break-system-packages (not recommended)")
+        if self.run_command(['pip3', 'install', '--break-system-packages', 'ssh-audit']):
+            return True
+        
+        logger.error("Failed to install SSH-Audit")
+        logger.info("Please install manually: pipx install ssh-audit")
+        return False
     
     def install_sslyze(self) -> bool:
         """Install SSLyze."""
@@ -215,12 +247,20 @@ class ToolInstaller:
         
         logger.info("Installing SSLyze...")
         
-        # SSLyze is a Python tool, install via pip
-        if not self.run_command(['pip3', 'install', 'sslyze']):
-            logger.error("Failed to install SSLyze")
-            return False
+        # Check if pipx is available (preferred for Python tools)
+        if shutil.which('pipx'):
+            logger.info("Installing SSLyze via pipx...")
+            if self.run_command(['pipx', 'install', 'sslyze']):
+                return True
         
-        return True
+        # Last resort: pip with --break-system-packages flag
+        logger.warning("Attempting pip install with --break-system-packages (not recommended)")
+        if self.run_command(['pip3', 'install', '--break-system-packages', 'sslyze']):
+            return True
+        
+        logger.error("Failed to install SSLyze")
+        logger.info("Please install manually: pipx install sslyze")
+        return False
     
     def check_all_tools(self) -> dict:
         """Check status of all required tools."""

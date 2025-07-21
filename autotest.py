@@ -472,7 +472,8 @@ def main(
         
         # Add targets from file
         if file:
-            file_targets = input_parser.parse_targets(Path(file))
+            # parse_targets expects '@filename' format for files
+            file_targets = input_parser.parse_targets(f"@{file}")
             all_targets.extend(file_targets)
         
         # Add targets from Nmap XML
@@ -490,7 +491,23 @@ def main(
             sys.exit(1)
         
         # Process and validate targets
-        processed_targets = input_parser.parse_targets(all_targets)
+        processed_targets = []
+        for target in all_targets:
+            try:
+                parsed = input_parser.parse_targets(target)
+                processed_targets.extend(parsed)
+            except Exception as e:
+                logging.warning(f"Failed to parse target '{target}': {e}")
+                continue
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_targets = []
+        for target in processed_targets:
+            if target not in seen:
+                seen.add(target)
+                unique_targets.append(target)
+        processed_targets = unique_targets
         
         console.print(f"[green]Starting scan of {len(processed_targets)} targets[/green]")
         
