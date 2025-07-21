@@ -8,7 +8,7 @@ import subprocess
 import platform
 import concurrent.futures
 import time
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional, Set, Any
 from .utils import is_port_open, chunk_list
 from .exceptions import DiscoveryError, NetworkError
 
