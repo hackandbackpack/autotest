@@ -66,11 +66,16 @@ class AutoTestTUI:
         self.current_target = ""
         self.ui_thread = None
         self._shutdown_event = threading.Event()
+        self._original_sigint = None
         
     def start(self):
         """Start the TUI in a separate thread"""
         self.running = True
         self.start_time = time.time()
+        
+        # Install signal handler for cleanup
+        self._original_sigint = signal.signal(signal.SIGINT, self._signal_handler)
+        
         self.ui_thread = threading.Thread(target=self._run_ui, daemon=True)
         self.ui_thread.start()
         
@@ -82,6 +87,10 @@ class AutoTestTUI:
             self.ui_thread.join(timeout=2)
         if self.stdscr:
             curses.endwin()
+        
+        # Restore original signal handler
+        if self._original_sigint:
+            signal.signal(signal.SIGINT, self._original_sigint)
             
     def _run_ui(self):
         """Run the UI loop"""
@@ -90,6 +99,15 @@ class AutoTestTUI:
         except Exception:
             # Ignore errors on shutdown
             pass
+        finally:
+            # Always ensure terminal is restored
+            try:
+                curses.endwin()
+            except:
+                pass
+            # Reset terminal to sane state
+            import os
+            os.system('stty sane 2>/dev/null || true')
             
     def _ui_main(self, stdscr):
         """Main UI function"""
@@ -347,3 +365,17 @@ class AutoTestTUI:
     def run(self):
         """Run the TUI - alias for start() for compatibility"""
         self.start()
+    
+    def _signal_handler(self, signum, frame):
+        """Handle signals for cleanup"""
+        self.stop()
+        # Try to restore terminal
+        try:
+            curses.endwin()
+        except:
+            pass
+        import os
+        os.system('stty sane 2>/dev/null || true')
+        # Re-raise to let the app handle it
+        if self._original_sigint:
+            self._original_sigint(signum, frame)

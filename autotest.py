@@ -462,7 +462,7 @@ def _is_likely_file_path(target: str) -> bool:
 @click.option('-c', '--config', help='Path to configuration file')
 @click.option('-p', '--ports', help='Port specification (default: from config)')
 @click.option('-o', '--output', help='Output directory (default: from config)')
-@click.option('--no-tui', is_flag=True, help='Disable TUI progress display')
+@click.option('--tui', is_flag=True, help='Enable TUI progress display (experimental)')
 @click.option('--log-level', default='INFO', 
               type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
               help='Logging level')
@@ -476,7 +476,7 @@ def main(
     config: Optional[str],
     ports: Optional[str],
     output: Optional[str],
-    no_tui: bool,
+    tui: bool,
     log_level: str,
     file: Optional[str],
     nmap_xml: Optional[str],
@@ -657,8 +657,8 @@ def main(
         
         console.print(f"[green]Starting scan of {len(processed_targets)} targets[/green]")
         
-        # Run the scan
-        app.run_scan(processed_targets, ports, no_tui)
+        # Run the scan (TUI is disabled by default unless --tui flag is used)
+        app.run_scan(processed_targets, ports, no_tui=not tui)
         
     except AutoTestException as e:
         console.print(f"[red]Error:[/red] {e}")
