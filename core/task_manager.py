@@ -47,6 +47,13 @@ class Task:
     start_time: Optional[float] = None
     end_time: Optional[float] = None
     
+    # Plugin-specific attributes
+    target: Optional[str] = None
+    port: Optional[int] = None
+    service: Optional[str] = None
+    plugin_name: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    
     def __lt__(self, other):
         """Compare tasks by priority for queue ordering."""
         return self.priority.value > other.priority.value
@@ -496,13 +503,11 @@ class TaskManager:
                                 id=str(uuid.uuid4()),
                                 name=f"{plugin.name}_{host}:{port}",
                                 function=None,  # Will be handled by execute_plugin_task
-                                priority=TaskPriority.NORMAL
+                                priority=TaskPriority.NORMAL,
+                                target=host,
+                                port=port,
+                                service=service,
+                                plugin_name=plugin.name
                             )
-                            
-                            # Add custom attributes for plugin execution
-                            task.target = host
-                            task.port = port
-                            task.service = service
-                            task.plugin_name = plugin.name
                             
                             self.add_task(task)

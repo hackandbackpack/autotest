@@ -365,8 +365,8 @@ class AutoTest:
                 'service': task.service,
                 'tool': task.plugin_name,
                 'status': task.status.value,
-                'started_at': task.started_at,
-                'completed_at': task.completed_at,
+                'started_at': task.start_time,
+                'completed_at': task.end_time,
                 'result': task.result
             }
             
@@ -390,8 +390,8 @@ class AutoTest:
                 'service': task.service,
                 'tool': task.plugin_name,
                 'status': task.status.value,
-                'started_at': task.started_at,
-                'completed_at': task.completed_at,
+                'started_at': task.start_time,
+                'completed_at': task.end_time,
                 'error': task.error
             }
             
