@@ -63,8 +63,10 @@ class Discovery:
             )
             return result.returncode == 0
         except subprocess.TimeoutExpired:
+            logging.debug(f"Ping timeout for host {host}")
             return False
-        except Exception:
+        except Exception as e:
+            logging.debug(f"Ping failed for host {host}: {e}")
             return False
     
     def discover_hosts(self, targets: List[str], ports: Optional[str] = None,
@@ -125,9 +127,9 @@ class Discovery:
                 try:
                     if future.result():
                         live_hosts.append(host)
-                except Exception:
+                except Exception as e:
+                    logging.debug(f"Error processing host {host}: {e}")
                     # Skip hosts that cause errors
-                    pass
                 
                 # Update progress
                 if progress_callback:
@@ -260,9 +262,9 @@ class Discovery:
                 try:
                     if future.result():
                         open_ports.append(port)
-                except Exception:
+                except Exception as e:
+                    logging.debug(f"Error checking port {port}: {e}")
                     # Skip ports that cause errors
-                    pass
                 
                 # Update progress
                 if progress_callback:
@@ -447,7 +449,8 @@ class Discovery:
             
             return banner if banner else None
             
-        except Exception:
+        except Exception as e:
+            logging.debug(f"Failed to identify service: {e}")
             return None
     
     def enhanced_scan(self, host: str, ports: List[int]) -> Dict[str, Any]:
@@ -547,12 +550,14 @@ class Discovery:
                     end_port = int(end.strip())
                     ports.extend(range(start_port, end_port + 1))
                 except ValueError:
+                    logging.debug(f"Invalid port range format: {part}")
                     continue
             else:
                 # Single port
                 try:
                     ports.append(int(part))
                 except ValueError:
+                    logging.debug(f"Invalid port range format: {part}")
                     continue
         
         # Remove duplicates and sort

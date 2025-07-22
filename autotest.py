@@ -431,7 +431,7 @@ def main(
         
         # Override output directory if specified
         if output:
-            app.config.config['general']['output_dir'] = output
+            app.config.set('output_dir', output)
         
         # Load plugins
         app.load_plugins()

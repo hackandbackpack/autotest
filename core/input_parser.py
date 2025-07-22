@@ -3,7 +3,12 @@ Input parsing and validation for AutoTest framework.
 """
 
 import re
+import os
+import json
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
+import xml.etree.ElementTree as ET
+from xml.etree.ElementTree import ParseError
 from .utils import (
     validate_ip, validate_cidr, validate_port,
     parse_port_range, cidr_to_ip_list
@@ -254,6 +259,9 @@ class InputParser:
         Raises:
             ValidationError: If file cannot be read or contains invalid targets
         """
+        # Validate and sanitize the file path
+        filename = self._sanitize_file_path(filename)
+        
         targets = []
         
         try:
@@ -353,3 +361,245 @@ class InputParser:
             return False, "Too many ports specified"
         
         return True, None
+    
+    def _sanitize_file_path(self, filepath: str) -> str:
+        """
+        Sanitize a file path to prevent path traversal attacks.
+        
+        Args:
+            filepath: The file path to sanitize
+            
+        Returns:
+            Sanitized file path
+            
+        Raises:
+            ValidationError: If the path is invalid or attempts path traversal
+        """
+        # Convert to Path object for normalization
+        path = Path(filepath)
+        
+        # Resolve to absolute path
+        try:
+            resolved_path = path.resolve()
+        except Exception as e:
+            raise ValidationError(f"Invalid file path: {e}")
+        
+        # Check for path traversal attempts
+        if ".." in str(path):
+            raise ValidationError("Path traversal detected in file path")
+        
+        # Ensure the file exists and is readable
+        if not resolved_path.exists():
+            raise ValidationError(f"File not found: {filepath}")
+        
+        if not resolved_path.is_file():
+            raise ValidationError(f"Not a file: {filepath}")
+        
+        # Check read permissions
+        if not os.access(resolved_path, os.R_OK):
+            raise ValidationError(f"No read permission for file: {filepath}")
+        
+        return str(resolved_path)
+    
+    def sanitize_output_path(self, output_dir: str) -> str:
+        """
+        Sanitize output directory path.
+        
+        Args:
+            output_dir: The output directory path
+            
+        Returns:
+            Sanitized output path
+            
+        Raises:
+            ValidationError: If the path is invalid
+        """
+        # Convert to Path object
+        path = Path(output_dir)
+        
+        # Resolve to absolute path
+        try:
+            resolved_path = path.resolve()
+        except Exception as e:
+            raise ValidationError(f"Invalid output path: {e}")
+        
+        # Check for path traversal
+        if ".." in str(path):
+            raise ValidationError("Path traversal detected in output path")
+        
+        # Create directory if it doesn't exist
+        try:
+            resolved_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise ValidationError(f"Cannot create output directory: {e}")
+        
+        return str(resolved_path)
+    
+    def validate_tool_name(self, tool_name: str) -> str:
+        """
+        Validate and sanitize tool name to prevent command injection.
+        
+        Args:
+            tool_name: The tool name to validate
+            
+        Returns:
+            Sanitized tool name
+            
+        Raises:
+            ValidationError: If the tool name contains invalid characters
+        """
+        # Allow only alphanumeric characters, underscores, and hyphens
+        if not re.match(r'^[a-zA-Z0-9_-]+$', tool_name):
+            raise ValidationError(f"Invalid tool name: {tool_name}")
+        
+        # Check length
+        if len(tool_name) > 50:
+            raise ValidationError("Tool name too long")
+        
+        return tool_name
+    
+    def parse_nmap_xml(self, xml_path: Path) -> Dict[str, Any]:
+        """
+        Parse Nmap XML output file safely, preventing XXE attacks.
+        
+        Args:
+            xml_path: Path to Nmap XML file
+            
+        Returns:
+            Dictionary with parsed Nmap results
+            
+        Raises:
+            ValidationError: If XML parsing fails or file is invalid
+        """
+        # Sanitize the file path
+        xml_path_str = self._sanitize_file_path(str(xml_path))
+        
+        results = {
+            'hosts': {},
+            'scan_info': {}
+        }
+        
+        try:
+            # Parse XML safely with XXE protection
+            parser = ET.XMLParser(resolve_entities=False)
+            tree = ET.parse(xml_path_str, parser=parser)
+            root = tree.getroot()
+            
+            # Extract scan info
+            if 'start' in root.attrib:
+                results['scan_info']['start_time'] = root.attrib['start']
+            if 'version' in root.attrib:
+                results['scan_info']['nmap_version'] = root.attrib['version']
+            
+            # Parse hosts
+            for host in root.findall('.//host'):
+                # Get IP address
+                ip = None
+                for addr in host.findall('address'):
+                    if addr.get('addrtype') == 'ipv4':
+                        ip = addr.get('addr')
+                        break
+                
+                if not ip:
+                    continue
+                
+                # Validate IP
+                if not validate_ip(ip):
+                    continue
+                
+                host_info = {
+                    'state': 'up' if host.find('status').get('state') == 'up' else 'down',
+                    'ports': []
+                }
+                
+                # Parse ports
+                ports_elem = host.find('ports')
+                if ports_elem is not None:
+                    for port in ports_elem.findall('port'):
+                        port_num = port.get('portid')
+                        if port_num and port_num.isdigit():
+                            port_info = {
+                                'port': int(port_num),
+                                'protocol': port.get('protocol', 'tcp'),
+                                'state': port.find('state').get('state') if port.find('state') is not None else 'unknown'
+                            }
+                            
+                            # Get service info
+                            service = port.find('service')
+                            if service is not None:
+                                port_info['service'] = service.get('name', 'unknown')
+                                if service.get('product'):
+                                    port_info['product'] = service.get('product')
+                                if service.get('version'):
+                                    port_info['version'] = service.get('version')
+                            
+                            host_info['ports'].append(port_num)
+                
+                results['hosts'][ip] = host_info
+            
+        except ParseError as e:
+            raise ValidationError(f"Invalid XML format in Nmap file: {e}")
+        except Exception as e:
+            raise ValidationError(f"Error parsing Nmap XML: {e}")
+        
+        return results
+    
+    def parse_masscan_json(self, json_path: Path) -> Dict[str, Any]:
+        """
+        Parse Masscan JSON output file.
+        
+        Args:
+            json_path: Path to Masscan JSON file
+            
+        Returns:
+            Dictionary with parsed Masscan results
+            
+        Raises:
+            ValidationError: If JSON parsing fails or file is invalid
+        """
+        # Sanitize the file path
+        json_path_str = self._sanitize_file_path(str(json_path))
+        
+        results = {
+            'hosts': {},
+            'scan_info': {}
+        }
+        
+        try:
+            with open(json_path_str, 'r', encoding='utf-8') as f:
+                # Masscan outputs one JSON object per line
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    # Extract IP and port info
+                    if 'ip' in data and 'ports' in data:
+                        ip = data['ip']
+                        
+                        # Validate IP
+                        if not validate_ip(ip):
+                            continue
+                        
+                        if ip not in results['hosts']:
+                            results['hosts'][ip] = {
+                                'state': 'up',
+                                'ports': []
+                            }
+                        
+                        # Add port info
+                        for port_data in data['ports']:
+                            if 'port' in port_data:
+                                port = str(port_data['port'])
+                                if port not in results['hosts'][ip]['ports']:
+                                    results['hosts'][ip]['ports'].append(port)
+        
+        except Exception as e:
+            raise ValidationError(f"Error parsing Masscan JSON: {e}")
+        
+        return results

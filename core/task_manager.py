@@ -6,6 +6,7 @@ import threading
 import queue
 import time
 import concurrent.futures
+import logging
 from typing import List, Dict, Any, Callable, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -64,16 +65,23 @@ class TaskManager:
     Manages task execution with support for dependencies and priorities.
     """
     
-    def __init__(self, max_workers: int = 10):
+    def __init__(self, max_workers: int = 10, max_queue_size: int = 1000,
+                 memory_limit_mb: int = 1024, cpu_percent_limit: int = 80):
         """
-        Initialize TaskManager.
+        Initialize TaskManager with resource limits.
         
         Args:
             max_workers: Maximum number of concurrent workers
+            max_queue_size: Maximum number of tasks in queue
+            memory_limit_mb: Memory limit in MB (per worker)
+            cpu_percent_limit: CPU usage limit percentage
         """
         self.max_workers = max_workers
+        self.max_queue_size = max_queue_size
+        self.memory_limit_mb = memory_limit_mb
+        self.cpu_percent_limit = cpu_percent_limit
         self.tasks: Dict[str, Task] = {}
-        self.task_queue = queue.PriorityQueue()
+        self.task_queue = queue.PriorityQueue(maxsize=max_queue_size)
         self.results: Dict[str, Any] = {}
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
@@ -83,6 +91,8 @@ class TaskManager:
         self.completed_tasks: List[Task] = []
         self.failed_tasks: List[Task] = []
         self.running = False
+        self._resource_monitor_thread = None
+        self._monitor_stop_event = threading.Event()
     
     def add_task(self, task: Task) -> None:
         """
@@ -97,6 +107,10 @@ class TaskManager:
         with self.lock:
             if task.id in self.tasks:
                 raise TaskError(f"Task with ID '{task.id}' already exists")
+            
+            # Check queue size limit
+            if len(self.tasks) >= self.max_queue_size:
+                raise TaskError(f"Task queue full (limit: {self.max_queue_size})")
             
             self.tasks[task.id] = task
     
@@ -135,6 +149,14 @@ class TaskManager:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.running = True
         
+        # Start resource monitor thread
+        self._monitor_stop_event.clear()
+        self._resource_monitor_thread = threading.Thread(
+            target=self._monitor_resources,
+            daemon=True
+        )
+        self._resource_monitor_thread.start()
+        
         # Initialize stats
         import time
         self.stats['start_time'] = time.time()
@@ -151,6 +173,9 @@ class TaskManager:
             wait: Whether to wait for running tasks to complete
         """
         self.stop_event.set()
+        self._monitor_stop_event.set()
+        if self._resource_monitor_thread:
+            self._resource_monitor_thread.join(timeout=2)
         self.running = False
         
         # Update end time in stats
@@ -541,3 +566,44 @@ class TaskManager:
                             )
                             
                             self.add_task(task)
+    
+    def _monitor_resources(self) -> None:
+        """
+        Monitor system resources and throttle if limits exceeded.
+        """
+        try:
+            import psutil
+        except ImportError:
+            logging.warning("psutil not installed, resource monitoring disabled")
+            return
+        
+        while not self._monitor_stop_event.is_set():
+            try:
+                # Check CPU usage
+                cpu_percent = psutil.cpu_percent(interval=1)
+                
+                # Check memory usage
+                memory = psutil.virtual_memory()
+                memory_used_mb = (memory.total - memory.available) / (1024 * 1024)
+                
+                # If resources exceed limits, pause task execution
+                if cpu_percent > self.cpu_percent_limit:
+                    logging.warning(f"CPU usage high ({cpu_percent}%), throttling tasks")
+                    time.sleep(2)  # Brief pause to let CPU cool down
+                
+                # Check per-process memory if possible
+                try:
+                    process = psutil.Process()
+                    process_memory_mb = process.memory_info().rss / (1024 * 1024)
+                    if process_memory_mb > self.memory_limit_mb * self.max_workers:
+                        logging.warning(f"Memory usage high ({process_memory_mb}MB), throttling tasks")
+                        time.sleep(1)
+                except:
+                    pass
+                
+                # Brief sleep before next check
+                time.sleep(5)
+                
+            except Exception as e:
+                logging.debug(f"Resource monitoring error: {e}")
+                time.sleep(10)

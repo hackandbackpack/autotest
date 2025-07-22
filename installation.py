@@ -16,6 +16,8 @@ import platform
 import json
 import shutil
 import time
+import shlex
+import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -282,18 +284,18 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
     
     try:
         # Run the install command
+        # Parse command safely using shlex
+        cmd_parts = shlex.split(install_cmd)
+        
         if platform.system() == "Windows":
-            # Don't use shell=True on Windows with pip
-            if "pip install" in install_cmd or "-m pip" in install_cmd:
-                result = subprocess.run(install_cmd.split(), capture_output=True, text=True)
-            else:
-                result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
+            # Windows doesn't support sudo
+            result = subprocess.run(cmd_parts, capture_output=True, text=True)
         else:
             # For Linux/Mac, check if sudo is needed
             if "sudo" in install_cmd:
                 # Run with sudo interactively (don't capture output for password prompt)
                 print(f"    [!] This installation requires sudo privileges")
-                result = subprocess.run(install_cmd, shell=True)
+                result = subprocess.run(cmd_parts)
                 # Manually create a result-like object
                 class Result:
                     def __init__(self, returncode):
@@ -301,7 +303,7 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
                         self.stderr = ""
                 result = Result(result if isinstance(result, int) else 0)
             else:
-                result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
+                result = subprocess.run(cmd_parts, capture_output=True, text=True)
         
         if result.returncode == 0:
             print(f"[+] Successfully installed {tool_name}")
@@ -313,9 +315,9 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
                 
                 # Try with pipx first
                 print(f"    Trying pipx install {tool_name}...")
+                pipx_cmd = ["pipx", "install", tool_name]
                 pipx_result = subprocess.run(
-                    f"pipx install {tool_name}",
-                    shell=True,
+                    pipx_cmd,
                     capture_output=True,
                     text=True
                 )
@@ -328,10 +330,9 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
                     
                     # Try with --user --break-system-packages
                     print(f"    Trying pip install with --user --break-system-packages...")
-                    user_install_cmd = install_cmd + " --user --break-system-packages"
+                    user_cmd_parts = cmd_parts + ["--user", "--break-system-packages"]
                     user_result = subprocess.run(
-                        user_install_cmd,
-                        shell=True,
+                        user_cmd_parts,
                         capture_output=True,
                         text=True
                     )
@@ -469,7 +470,7 @@ def main():
                     else:
                         # For system packages, try multiple methods to find the tool
                         # Sometimes the PATH needs to be refreshed
-                        subprocess.run("hash -r", shell=True, capture_output=True)
+                        subprocess.run(["hash", "-r"], capture_output=True, stderr=subprocess.DEVNULL)
                         
                         # Try to reload PATH from system
                         if platform.system() != "Windows":

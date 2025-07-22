@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import signal
 import sys
+import subprocess
 
 
 class TaskStatus(Enum):
@@ -107,7 +108,7 @@ class AutoTestTUI:
                 pass
             # Reset terminal to sane state
             import os
-            os.system('stty sane 2>/dev/null || true')
+            subprocess.run(['stty', 'sane'], stderr=subprocess.DEVNULL)
             
     def _ui_main(self, stdscr):
         """Main UI function"""
