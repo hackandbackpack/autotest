@@ -15,6 +15,7 @@ import subprocess
 import platform
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -275,7 +276,19 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
             else:
                 result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
         else:
-            result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
+            # For Linux/Mac, check if sudo is needed
+            if "sudo" in install_cmd:
+                # Run with sudo interactively (don't capture output for password prompt)
+                print(f"    [!] This installation requires sudo privileges")
+                result = subprocess.run(install_cmd, shell=True)
+                # Manually create a result-like object
+                class Result:
+                    def __init__(self, returncode):
+                        self.returncode = returncode
+                        self.stderr = ""
+                result = Result(result if isinstance(result, int) else 0)
+            else:
+                result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
         
         if result.returncode == 0:
             print(f"[+] Successfully installed {tool_name}")
@@ -372,6 +385,15 @@ def main():
     print("AutoTest Installation & Setup")
     print("=" * 50)
     
+    # Check if running with sudo
+    if platform.system() != "Windows" and os.geteuid() == 0:
+        print("\n[!] Warning: Running as root/sudo is not recommended")
+        print("    Tool paths will be saved for root user, not your regular user")
+        print("    Consider running without sudo")
+        response = input("\nContinue anyway? (y/n): ")
+        if response.lower() != 'y':
+            sys.exit(0)
+    
     # Detect Python scripts directory
     scripts_dir = get_python_scripts_dir()
     if scripts_dir:
@@ -415,6 +437,10 @@ def main():
                 tool_info = TOOLS[tool_name]
                 
                 if install_tool(tool_name, tool_info):
+                    # Wait a moment for system package managers to update PATH
+                    if "sudo" in TOOLS[tool_name]["install"].get(platform.system().lower(), ""):
+                        time.sleep(1)
+                    
                     # Check again after installation
                     available, path = check_tool(tool_name, tool_info)
                     
@@ -427,6 +453,13 @@ def main():
                             available, path = check_tool(tool_name, tool_info)
                             if available:
                                 print(f"[+] {tool_name} is now available via wrapper")
+                    else:
+                        # For system packages, try rehashing or searching again
+                        # Sometimes the PATH needs to be refreshed
+                        subprocess.run("hash -r", shell=True, capture_output=True)
+                        available, path = check_tool(tool_name, tool_info)
+                        if available:
+                            print(f"[+] {tool_name} is now available at: {path}")
     
     # Final summary
     print("\n\nFinal Summary")
