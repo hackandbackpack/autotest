@@ -257,7 +257,9 @@ class SSLPlugin(Plugin):
                 )
             
             # Check if command succeeded
-            if result.returncode != 0:
+            # SSLyze may return exit code 1 for warnings (like deprecated certificate parsing)
+            # If we have JSON output, treat it as success
+            if result.returncode != 0 and not json_output.exists():
                 logger.error(f"SSLyze failed with return code {result.returncode}")
                 logger.error(f"STDERR: {result.stderr}")
                 results["success"] = False
@@ -273,6 +275,11 @@ class SSLPlugin(Plugin):
                 help_result = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=5)
                 logger.info(f"Help command output: {help_result.stdout[:500] if help_result.stdout else 'No output'}")
                 logger.info(f"Help command stderr: {help_result.stderr[:500] if help_result.stderr else 'No stderr'}")
+            elif result.returncode == 1 and json_output.exists():
+                # SSLyze returned warning but produced output - treat as success
+                logger.warning(f"SSLyze returned exit code 1 (warning): {result.stderr}")
+                if 'CryptographyDeprecationWarning' in result.stderr:
+                    logger.info("Ignoring CryptographyDeprecationWarning - output was still generated")
             
             # Parse results
             findings = self._parse_results(json_output, result.stdout)

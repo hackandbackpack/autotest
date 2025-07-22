@@ -37,9 +37,8 @@ class OutputManager:
         # Create output directory
         create_directory(self.output_dir)
         
-        # Create session directory
-        self.session_dir = os.path.join(self.output_dir, self.session_id)
-        create_directory(self.session_dir)
+        # Use the output_dir directly as session_dir (no duplicate timestamp directory)
+        self.session_dir = self.output_dir
         
         # Create subdirectories for better organization
         self.logs_dir = os.path.join(self.session_dir, "logs")
@@ -93,7 +92,7 @@ class OutputManager:
         if format in ["txt", "json", "xml", "csv"] and ("report" in filename or "scan_results" in filename):
             filepath = os.path.join(self.reports_dir, f"{filename}.{ext}")
         else:
-            filepath = os.path.join(self.session_dir, f"{filename}.{ext}")
+            filepath = os.path.join(self.raw_dir, f"{filename}.{ext}")
         
         try:
             # Format results
