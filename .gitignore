@@ -156,4 +156,14 @@ credentials/
 raw_output/
 nmap_output/
 nuclei_output/
-metasploit_output/output/
+metasploit_output/
+output/
+
+# Test and temporary files
+test_output/
+test_output2/
+*.backup
+*.tmp
+*.temp
+ANALYSIS_REPORT.md
+SILENT_ERROR_HANDLING_REPORT.md

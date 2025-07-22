@@ -153,15 +153,31 @@ class SSLPlugin(Plugin):
     
     def execute(self, target: str, **kwargs) -> Dict[str, Any]:
         """Execute SSL/TLS scan task."""
+        logger.info(f"SSL plugin execute() called for {target} with kwargs: {kwargs}")
+        
         if not self.validate_params(target=target, **kwargs):
             return {"success": False, "error": "Invalid parameters"}
         
         # Find tool
         tool_path = self._find_tool()
         if not tool_path:
+            error_msg = "sslyze not found. Please install it first with: pip install sslyze"
+            logger.error(error_msg)
+            
+            # Log the failure if output manager is available
+            if hasattr(self, 'output_manager') and self.output_manager:
+                self.output_manager.log_tool_execution(
+                    tool_name="sslyze",
+                    target=f"{target}:{kwargs.get('port', 443)}",
+                    command="sslyze (NOT FOUND)",
+                    output=error_msg,
+                    service="SSL/TLS",
+                    execution_time=0
+                )
+            
             return {
                 "success": False,
-                "error": "sslyze not found. Please install it first.",
+                "error": error_msg,
                 "install_command": "pip install sslyze"
             }
         
@@ -185,34 +201,26 @@ class SSLPlugin(Plugin):
             json_output = output_dir / f"ssl_{target}_{port}.json"
             txt_output = output_dir / f"ssl_{target}_{port}.txt"
             
-            # Build SSLyze command for JSON output
+            # Build SSLyze command
+            # SSLyze 5.x uses different syntax
             # Handle case where tool_path might be "python -m sslyze"
             if " " in tool_path:
                 cmd = tool_path.split() + [
                     "--json_out", str(json_output),
-                    "--regular",  # Regular scan (includes cipher suites, protocols, etc.)
                     f"{target}:{port}"
                 ]
             else:
                 cmd = [
                     tool_path,
                     "--json_out", str(json_output),
-                    "--regular",  # Regular scan (includes cipher suites, protocols, etc.)
                     f"{target}:{port}"
                 ]
             
-            # Add additional scan options based on kwargs
-            if kwargs.get('heartbleed', True):
-                cmd.append("--heartbleed")
-            
-            if kwargs.get('compression', True):
-                cmd.append("--compression")
-            
-            if kwargs.get('fallback', True):
-                cmd.append("--fallback")
+            # Note: SSLyze 5.x automatically scans for common vulnerabilities
+            # The --regular, --heartbleed, etc. options are deprecated
             
             # Run SSLyze
-            logger.debug(f"Running command: {' '.join(cmd)}")
+            logger.info(f"Running command: {' '.join(cmd)}")
             start_time = time.time()
             result = subprocess.run(
                 cmd,
@@ -222,22 +230,49 @@ class SSLPlugin(Plugin):
             )
             execution_time = time.time() - start_time
             
-            # Save text output
+            # Combine stdout and stderr for full output
+            full_output = ""
             if result.stdout:
-                with open(txt_output, 'w') as f:
-                    f.write(result.stdout)
-                results["text_output"] = str(txt_output)
+                full_output += result.stdout
+            if result.stderr:
+                full_output += f"\n\nSTDERR:\n{result.stderr}"
+            
+            # Add return code info
+            full_output += f"\n\nReturn code: {result.returncode}"
+            
+            # Save text output
+            with open(txt_output, 'w') as f:
+                f.write(full_output)
+            results["text_output"] = str(txt_output)
+            
+            # Always log to output manager if available
+            if hasattr(self, 'output_manager') and self.output_manager:
+                self.output_manager.log_tool_execution(
+                    tool_name="sslyze",
+                    target=f"{target}:{port}",
+                    command=' '.join(cmd),
+                    output=full_output,
+                    service="SSL/TLS",
+                    execution_time=execution_time
+                )
+            
+            # Check if command succeeded
+            if result.returncode != 0:
+                logger.error(f"SSLyze failed with return code {result.returncode}")
+                logger.error(f"STDERR: {result.stderr}")
+                results["success"] = False
+                results["errors"].append(f"SSLyze failed: {result.stderr}")
                 
-                # Log to output manager if available
-                if hasattr(self, 'output_manager') and self.output_manager:
-                    self.output_manager.log_tool_execution(
-                        tool_name="sslyze",
-                        target=f"{target}:{port}",
-                        command=' '.join(cmd),
-                        output=result.stdout,
-                        service="SSL/TLS",
-                        execution_time=execution_time
-                    )
+                # Try a simple command to get more info
+                logger.info("Trying simple sslyze command for debugging")
+                if " " in tool_path:
+                    simple_cmd = tool_path.split() + ["--help"]
+                else:
+                    simple_cmd = [tool_path, "--help"]
+                    
+                help_result = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=5)
+                logger.info(f"Help command output: {help_result.stdout[:500] if help_result.stdout else 'No output'}")
+                logger.info(f"Help command stderr: {help_result.stderr[:500] if help_result.stderr else 'No stderr'}")
             
             # Parse results
             findings = self._parse_results(json_output, result.stdout)
