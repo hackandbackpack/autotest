@@ -486,6 +486,7 @@ class TaskManager:
         Args:
             discovered_hosts: Dictionary of discovered hosts with their open ports
             plugins: List of available plugins
+            executor_callback: Optional callback to execute plugin tasks
         """
         import uuid
         
@@ -499,10 +500,39 @@ class TaskManager:
                     for plugin in plugins:
                         if hasattr(plugin, 'can_handle') and plugin.can_handle(service, port):
                             # Create a task for this plugin
+                            task_id = str(uuid.uuid4())
+                            
+                            # Create a closure that captures the plugin and parameters
+                            def make_plugin_executor(plugin_instance, target_host, target_port):
+                                def execute_plugin():
+                                    # Check if plugin tools are available (unless skipped)
+                                    if not getattr(plugin_instance, 'skip_tool_check', False):
+                                        tools_available, tool_status = plugin_instance.check_required_tools()
+                                        if not tools_available:
+                                            missing_tools = plugin_instance.get_missing_tools()
+                                            error_msg = "Missing required tools:\n"
+                                            for tool in missing_tools:
+                                                error_msg += f"  - {tool['name']}: {tool['install_command']}\n"
+                                            raise Exception(error_msg)
+                                    
+                                    # Check if autotest_instance is available for output_dir
+                                    if hasattr(self, 'autotest_instance') and self.autotest_instance:
+                                        output_dir = self.autotest_instance.output_manager.session_dir
+                                    else:
+                                        output_dir = "output"
+                                    
+                                    # Execute the plugin
+                                    return plugin_instance.execute(
+                                        target_host, 
+                                        port=target_port,
+                                        output_dir=output_dir
+                                    )
+                                return execute_plugin
+                            
                             task = Task(
-                                id=str(uuid.uuid4()),
+                                id=task_id,
                                 name=f"{plugin.name}_{host}:{port}",
-                                function=None,  # Will be handled by execute_plugin_task
+                                function=make_plugin_executor(plugin, host, port),
                                 priority=TaskPriority.NORMAL,
                                 target=host,
                                 port=port,

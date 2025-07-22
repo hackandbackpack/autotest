@@ -142,96 +142,8 @@ class AutoTest:
         
         logging.info(f"Loaded {len(self.plugins)} plugins")
     
-    def execute_plugin_task(self, task: Task) -> Any:
-        """Execute a task using the appropriate plugin."""
-        # Find the plugin for this task
-        plugin = None
-        for p in self.plugins:
-            if p.name == task.plugin_name:
-                plugin = p
-                break
-        
-        if not plugin:
-            raise AutoTestException(f"No plugin found for task: {task.plugin_name}")
-        
-        # Check if plugin tools are available (unless skipped)
-        if not getattr(plugin, 'skip_tool_check', False):
-            tools_available, tool_status = plugin.check_required_tools()
-            if not tools_available:
-                missing_tools = plugin.get_missing_tools()
-                error_msg = "Missing required tools:\n"
-                for tool in missing_tools:
-                    error_msg += f"  - {tool['name']}: {tool['install_command']}\n"
-                raise AutoTestException(error_msg)
-        
-        # Execute the task using the plugin's execute method
-        # Convert task parameters to kwargs format expected by plugin.execute()
-        kwargs = {
-            'port': task.port,
-            'output_dir': self.output_manager.session_dir
-        }
-        # Add any additional task-specific parameters
-        if hasattr(task, 'params') and task.params:
-            kwargs.update(task.params)
-        
-        return plugin.execute(task.target, **kwargs)
-    
-    def _process_tasks(self) -> None:
-        """Process tasks from the task manager queue."""
-        import threading
-        
-        def worker():
-            """Worker thread to process tasks."""
-            while not self.shutdown_event.is_set():
-                # Get pending tasks
-                with self.task_manager.lock:
-                    pending_tasks = [
-                        t for t in self.task_manager.tasks.values()
-                        if t.status == TaskStatus.PENDING and
-                        self.task_manager._are_dependencies_met(t)
-                    ]
-                
-                if not pending_tasks:
-                    time.sleep(0.1)
-                    continue
-                
-                # Process each pending task
-                for task in pending_tasks:
-                    if self.shutdown_event.is_set():
-                        break
-                    
-                    try:
-                        # Mark as running
-                        with self.task_manager.lock:
-                            task.status = TaskStatus.RUNNING
-                            task.start_time = time.time()
-                        
-                        # Execute the task
-                        result = self.execute_plugin_task(task)
-                        
-                        # Mark as completed
-                        with self.task_manager.lock:
-                            task.status = TaskStatus.COMPLETED
-                            task.result = result
-                            task.end_time = time.time()
-                            self.task_manager.completed_tasks.append(task)
-                    
-                    except Exception as e:
-                        # Mark as failed
-                        with self.task_manager.lock:
-                            task.status = TaskStatus.FAILED
-                            task.error = e
-                            task.end_time = time.time()
-                            self.task_manager.failed_tasks.append(task)
-                        logging.error(f"Task {task.name} failed: {e}")
-        
-        # Start worker threads
-        num_workers = self.config.get('max_threads', 10)
-        workers = []
-        for _ in range(num_workers):
-            t = threading.Thread(target=worker, daemon=True)
-            t.start()
-            workers.append(t)
+    # Note: Plugin task execution is now handled within TaskManager
+    # by providing a closure function when creating tasks
     
     def run_scan(
         self,
@@ -287,7 +199,9 @@ class AutoTest:
             # Initialize task manager
             self.task_manager = TaskManager(max_workers=self.config.get('max_threads', 10))
             
-            # Create tasks from discovery results
+            # Create tasks from discovery results with plugin executor
+            # Pass the AutoTest instance so tasks can access execute_plugin_task
+            self.task_manager.autotest_instance = self
             self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins)
             
             # Setup TUI if not disabled and available
@@ -306,8 +220,8 @@ class AutoTest:
             # Start task execution
             self.task_manager.start()
             
-            # Process tasks using the execute_plugin_task callback
-            self._process_tasks()
+            # Note: Task execution is handled by TaskManager's scheduler
+            # which calls the function provided in each task
             
             # Wait for completion
             logging.info("Waiting for tasks to complete...")
