@@ -124,6 +124,19 @@ class Plugin(ABC):
                 })
         
         return missing_tools
+    
+    def can_handle(self, service: str, port: int) -> bool:
+        """Check if this plugin can handle the given service/port.
+        
+        Args:
+            service: Service name detected
+            port: Port number
+            
+        Returns:
+            True if plugin should run for this service/port
+        """
+        # Default implementation - override in subclasses
+        return False
 
 
 class PluginRegistry:

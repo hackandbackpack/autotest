@@ -334,3 +334,23 @@ class SSLPlugin(Plugin):
                     'details': {'raw': line}
                 })
     
+
+    def can_handle(self, service: str, port: int) -> bool:
+        """Check if this plugin can handle the given service/port.
+        
+        Args:
+            service: Service name detected
+            port: Port number
+            
+        Returns:
+            True if plugin should run for this service/port
+        """
+        # Handle known SSL/TLS ports
+        if port in self.ssl_ports:
+            return True
+        
+        # Handle services identified as SSL/TLS
+        service_lower = service.lower() if service else ""
+        ssl_indicators = ["ssl", "tls", "https", "ftps", "imaps", "pop3s", "smtps", "ldaps"]
+        
+        return any(indicator in service_lower for indicator in ssl_indicators)

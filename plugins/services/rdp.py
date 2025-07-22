@@ -521,3 +521,23 @@ class RDPPlugin(Plugin):
             }
         
         return findings
+    
+    def can_handle(self, service: str, port: int) -> bool:
+        """Check if this plugin can handle the given service/port.
+        
+        Args:
+            service: Service name detected
+            port: Port number
+            
+        Returns:
+            True if plugin should run for this service/port
+        """
+        # Handle known RDP ports
+        if port in [3389, 3388]:
+            return True
+        
+        # Handle services identified as RDP
+        service_lower = service.lower() if service else ""
+        rdp_indicators = ["rdp", "ms-wbt-server", "terminal", "remote desktop"]
+        
+        return any(indicator in service_lower for indicator in rdp_indicators)

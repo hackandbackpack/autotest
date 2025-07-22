@@ -278,3 +278,24 @@ class SSHPlugin(Plugin):
         
         return findings
     
+
+    
+    def can_handle(self, service: str, port: int) -> bool:
+        """Check if this plugin can handle the given service/port.
+        
+        Args:
+            service: Service name detected
+            port: Port number
+            
+        Returns:
+            True if plugin should run for this service/port
+        """
+        # Handle known SSH ports
+        if port in [22, 2222]:
+            return True
+        
+        # Handle services identified as SSH
+        service_lower = service.lower() if service else ""
+        ssh_indicators = ["ssh", "secure shell"]
+        
+        return any(indicator in service_lower for indicator in ssh_indicators)

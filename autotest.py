@@ -57,6 +57,9 @@ def setup_logging(log_level: str, log_file: Optional[Path] = None) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(numeric_level)
     
+    # Clear existing handlers to prevent duplicates
+    root_logger.handlers.clear()
+    
     # Console handler with rich formatting
     console_handler = RichHandler(
         console=console,
@@ -409,6 +412,9 @@ class AutoTest:
         """Shutdown the application cleanly."""
         logging.info("Shutting down AutoTest...")
         
+        if self.discovery:
+            self.discovery.shutdown()
+            
         if self.task_manager and self.task_manager.running:
             self.task_manager.stop()
         

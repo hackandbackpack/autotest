@@ -224,3 +224,24 @@ class SNMPPlugin(Plugin):
         
         return findings
     
+
+    
+    def can_handle(self, service: str, port: int) -> bool:
+        """Check if this plugin can handle the given service/port.
+        
+        Args:
+            service: Service name detected
+            port: Port number
+            
+        Returns:
+            True if plugin should run for this service/port
+        """
+        # Handle known SNMP ports
+        if port in [161, 162]:
+            return True
+        
+        # Handle services identified as SNMP
+        service_lower = service.lower() if service else ""
+        snmp_indicators = ["snmp", "simple network management"]
+        
+        return any(indicator in service_lower for indicator in snmp_indicators)

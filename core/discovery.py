@@ -31,6 +31,7 @@ class Discovery:
         self.max_threads = max_threads
         self.timeout = timeout
         self.is_windows = platform.system() == "Windows"
+        self._shutdown = False
     
     def ping_host(self, host: str, timeout: Optional[float] = None) -> bool:
         """
@@ -111,6 +112,13 @@ class Discovery:
             
             # Process results as they complete
             for future in concurrent.futures.as_completed(future_to_host):
+                if self._shutdown:
+                    logging.info("Discovery cancelled by user")
+                    # Cancel remaining futures
+                    for f in future_to_host:
+                        f.cancel()
+                    return {}
+                    
                 host = future_to_host[future]
                 completed += 1
                 
@@ -151,6 +159,13 @@ class Discovery:
                 
                 # Process results as they complete
                 for future in concurrent.futures.as_completed(future_to_host):
+                    if self._shutdown:
+                        logging.info("Port scan cancelled by user")
+                        # Cancel remaining futures
+                        for f in future_to_host:
+                            f.cancel()
+                        break
+                        
                     host = future_to_host[future]
                     completed += 1
                     
@@ -192,6 +207,10 @@ class Discovery:
         logging.info(f"Total open ports discovered: {self._open_ports_count}")
         
         return discovered_hosts
+    
+    def shutdown(self):
+        """Signal shutdown to stop discovery."""
+        self._shutdown = True
     
     def scan_port(self, host: str, port: int, timeout: Optional[float] = None) -> bool:
         """

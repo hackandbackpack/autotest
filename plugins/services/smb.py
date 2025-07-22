@@ -442,3 +442,23 @@ class SMBPlugin(Plugin):
             }
         
         return findings
+    
+    def can_handle(self, service: str, port: int) -> bool:
+        """Check if this plugin can handle the given service/port.
+        
+        Args:
+            service: Service name detected
+            port: Port number
+            
+        Returns:
+            True if plugin should run for this service/port
+        """
+        # Handle known SMB ports
+        if port in [139, 445]:
+            return True
+        
+        # Handle services identified as SMB/NetBIOS
+        service_lower = service.lower() if service else ""
+        smb_indicators = ["smb", "netbios", "microsoft-ds", "netbios-ssn"]
+        
+        return any(indicator in service_lower for indicator in smb_indicators)

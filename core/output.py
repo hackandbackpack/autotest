@@ -461,3 +461,34 @@ class OutputManager:
         self._save_plain(summary_path, summary_content)
         
         return summary_path
+    
+    def generate_reports(self, results: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Generate reports in multiple formats.
+        
+        Args:
+            results: Results dictionary to generate reports from
+            
+        Returns:
+            Dictionary mapping format type to file path
+        """
+        generated = {}
+        
+        # Generate different report types
+        report_types = ['summary', 'detailed']
+        
+        for report_type in report_types:
+            try:
+                report_path = self.generate_report(results, report_type)
+                generated[report_type] = report_path
+            except Exception as e:
+                logging.error(f"Failed to generate {report_type} report: {e}")
+        
+        # Also save raw JSON results
+        try:
+            json_path = self.save_results(results, "scan_results", format="json")
+            generated['json'] = json_path
+        except Exception as e:
+            logging.error(f"Failed to save JSON results: {e}")
+        
+        return generated
