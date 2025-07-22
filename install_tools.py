@@ -1,366 +1,398 @@
 #!/usr/bin/env python3
 """
-Tool installer script for AutoTest - installs required external tools.
+Install and configure required tools for AutoTest.
+
+This script:
+1. Checks for required tools
+2. Installs missing tools via pip
+3. Ensures installed tools are accessible on Windows
+4. Handles PATH configuration
 """
 
 import os
 import sys
 import subprocess
+import platform
+import json
 import shutil
 from pathlib import Path
-import platform
-import logging
+from typing import Dict, List, Tuple, Optional
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-class ToolInstaller:
-    """Handles installation of required tools."""
+# Tool definitions with install commands
+TOOLS = {
+    # Discovery tools
+    "nmap": {
+        "install": {
+            "windows": "Download from https://nmap.org/download.html",
+            "linux": "sudo apt-get install nmap",
+            "darwin": "brew install nmap"
+        },
+        "check_command": ["nmap", "--version"],
+        "type": "binary"
+    },
+    "masscan": {
+        "install": {
+            "windows": "Download from https://github.com/robertdavidgraham/masscan/releases",
+            "linux": "sudo apt-get install masscan",
+            "darwin": "brew install masscan"
+        },
+        "check_command": ["masscan", "--version"],
+        "type": "binary"
+    },
     
-    def __init__(self):
-        """Initialize tool installer."""
-        self.system = platform.system().lower()
-        self.distro = self._get_linux_distro()
+    # Python tools
+    "sslyze": {
+        "install": {
+            "all": "pip install sslyze"
+        },
+        "check_command": ["sslyze", "--help"],
+        "python_module": "sslyze",
+        "type": "python"
+    },
+    "netexec": {
+        "install": {
+            "all": "pip install netexec"
+        },
+        "check_command": ["netexec", "--help"],
+        "python_module": "netexec",
+        "type": "python"
+    },
     
-    def _get_linux_distro(self) -> str:
-        """Get Linux distribution information."""
-        if self.system != 'linux':
-            return ''
+    # Other tools
+    "hydra": {
+        "install": {
+            "windows": "Download from https://github.com/vanhauser-thc/thc-hydra",
+            "linux": "sudo apt-get install hydra",
+            "darwin": "brew install hydra"
+        },
+        "check_command": ["hydra", "-h"],
+        "type": "binary"
+    },
+    "onesixtyone": {
+        "install": {
+            "windows": "Build from https://github.com/trailofbits/onesixtyone",
+            "linux": "sudo apt-get install onesixtyone",
+            "darwin": "brew install onesixtyone"
+        },
+        "check_command": ["onesixtyone"],
+        "type": "binary"
+    }
+}
+
+
+def get_python_scripts_dir() -> Optional[Path]:
+    """Get the Scripts directory where pip installs executables."""
+    # Method 1: Get from site packages
+    try:
+        import site
+        user_base = site.USER_BASE
+        if platform.system() == "Windows":
+            scripts_dir = Path(user_base) / "Scripts"
+        else:
+            scripts_dir = Path(user_base) / "bin"
+        
+        if scripts_dir.exists():
+            return scripts_dir
+    except:
+        pass
+    
+    # Method 2: Get from pip show
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "show", "pip"],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("Location:"):
+                    location = line.split(":", 1)[1].strip()
+                    # Go up to the Python directory and find Scripts
+                    base_path = Path(location).parent
+                    if platform.system() == "Windows":
+                        scripts_dir = base_path / "Scripts"
+                    else:
+                        scripts_dir = base_path / "bin"
+                    
+                    if scripts_dir.exists():
+                        return scripts_dir
+    except:
+        pass
+    
+    # Method 3: Check common locations
+    if platform.system() == "Windows":
+        # Check for Microsoft Store Python
+        local_packages = Path.home() / "AppData" / "Local" / "Packages"
+        if local_packages.exists():
+            for item in local_packages.iterdir():
+                if item.name.startswith("PythonSoftwareFoundation.Python"):
+                    scripts_dir = item / "LocalCache" / "local-packages" / "Python311" / "Scripts"
+                    if scripts_dir.exists():
+                        return scripts_dir
+    
+    return None
+
+
+def is_in_path(directory: Path) -> bool:
+    """Check if a directory is in the system PATH."""
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    return str(directory) in path_dirs or str(directory).lower() in [p.lower() for p in path_dirs]
+
+
+def add_to_path_windows(directory: Path) -> bool:
+    """Add a directory to the user PATH on Windows."""
+    try:
+        import winreg
+        
+        # Open the Environment key
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_ALL_ACCESS
+        )
         
         try:
-            # Try to read from os-release
-            with open('/etc/os-release', 'r') as f:
-                content = f.read().lower()
-                # Check for specific distros first
-                if 'kali' in content:
-                    return 'kali'
-                elif 'ubuntu' in content:
-                    return 'ubuntu'
-                elif 'debian' in content:
-                    return 'debian'
-                elif 'fedora' in content:
-                    return 'fedora'
-                elif 'centos' in content:
-                    return 'centos'
-                elif 'rhel' in content or 'red hat' in content:
-                    return 'rhel'
-                elif 'arch' in content:
-                    return 'arch'
+            # Get current PATH
+            current_path, _ = winreg.QueryValueEx(key, "Path")
+        except WindowsError:
+            current_path = ""
+        
+        # Check if already in PATH
+        if str(directory) not in current_path:
+            # Add to PATH
+            new_path = current_path + os.pathsep + str(directory) if current_path else str(directory)
+            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+            print(f"[+] Added {directory} to user PATH")
+            print("    Note: You may need to restart your terminal for changes to take effect")
+            
+            # Broadcast environment change
+            try:
+                import ctypes
+                from ctypes import wintypes
                 
-                # Fallback to ID field
-                for line in content.splitlines():
-                    if line.startswith('id='):
-                        return line.split('=')[1].strip().strip('"')
-        except:
-            pass
-        
-        # Fallback methods
-        if shutil.which('apt-get'):
-            return 'debian'
-        elif shutil.which('yum') or shutil.which('dnf'):
-            return 'rhel'
-        elif shutil.which('pacman'):
-            return 'arch'
-        
-        return 'unknown'
-    
-    def check_tool(self, command: str) -> bool:
-        """Check if a tool is installed."""
-        # For simple existence check, just see if the command is available
-        tool_name = command.split()[0]
-        if shutil.which(tool_name):
+                HWND_BROADCAST = 0xFFFF
+                WM_SETTINGCHANGE = 0x001A
+                
+                result = ctypes.c_long()
+                ctypes.windll.user32.SendMessageTimeoutW(
+                    HWND_BROADCAST,
+                    WM_SETTINGCHANGE,
+                    0,
+                    "Environment",
+                    2,  # SMTO_ABORTIFHUNG
+                    5000,
+                    ctypes.byref(result)
+                )
+            except:
+                pass
+                
             return True
+        else:
+            print(f"[*] {directory} is already in PATH")
+            return True
+            
+        winreg.CloseKey(key)
         
-        # Fallback to running the command
+    except Exception as e:
+        print(f"[-] Failed to add to PATH: {e}")
+        return False
+
+
+def check_tool(tool_name: str, tool_info: Dict) -> Tuple[bool, Optional[str]]:
+    """Check if a tool is available and return its path."""
+    # Check if it's a Python module first
+    if tool_info.get("type") == "python" and "python_module" in tool_info:
+        # Try as Python module
         try:
             result = subprocess.run(
-                command.split(),
+                [sys.executable, "-m", tool_info["python_module"], "--help"],
                 capture_output=True,
-                text=True,
                 timeout=5
             )
-            # Some tools return non-zero for --version (e.g., masscan)
-            # Check if we got any output instead
-            return result.returncode == 0 or bool(result.stdout or result.stderr)
+            if result.returncode == 0:
+                return True, f"{sys.executable} -m {tool_info['python_module']}"
         except:
-            return False
+            pass
     
-    def run_command(self, command: list, use_sudo: bool = False) -> bool:
-        """Run a command with optional sudo."""
-        if use_sudo and os.geteuid() != 0:
-            command = ['sudo'] + command
-        
-        try:
-            logger.info(f"Running: {' '.join(command)}")
-            result = subprocess.run(command, check=True)
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Command failed with exit code {e.returncode}")
-            return False
-        except Exception as e:
-            logger.error(f"Error running command: {e}")
-            return False
+    # Check normal command
+    check_cmd = tool_info.get("check_command", [tool_name])
     
-    def install_system_tools(self) -> bool:
-        """Install system tools based on distribution."""
-        if self.system != 'linux':
-            logger.error("AutoTest currently only supports Linux systems")
-            return False
-        
-        logger.info(f"Detected distribution: {self.distro}")
-        
-        # Update package lists first
-        if self.distro in ['debian', 'ubuntu', 'kali']:
-            if not self.run_command(['apt-get', 'update'], use_sudo=True):
-                logger.warning("Failed to update package lists")
-        
-        # Install tools
-        success = True
-        
-        # Install masscan and nmap
-        tools_to_install = ['masscan', 'nmap']
-        
-        for tool in tools_to_install:
-            if self.check_tool(f"{tool} --version"):
-                logger.info(f"[OK] {tool} is already installed")
-                continue
-            
-            logger.info(f"Installing {tool}...")
-            
-            if self.distro in ['debian', 'ubuntu', 'kali']:
-                if not self.run_command(['apt-get', 'install', '-y', tool], use_sudo=True):
-                    logger.error(f"Failed to install {tool}")
-                    success = False
-            elif self.distro in ['rhel', 'centos', 'fedora']:
-                pkg_manager = 'dnf' if shutil.which('dnf') else 'yum'
-                if not self.run_command([pkg_manager, 'install', '-y', tool], use_sudo=True):
-                    logger.error(f"Failed to install {tool}")
-                    success = False
-            elif self.distro == 'arch':
-                if not self.run_command(['pacman', '-S', '--noconfirm', tool], use_sudo=True):
-                    logger.error(f"Failed to install {tool}")
-                    success = False
-            else:
-                logger.error(f"Unsupported distribution for automatic {tool} installation")
-                success = False
-        
-        return success
+    # Try with full path if in Scripts directory
+    scripts_dir = get_python_scripts_dir()
+    if scripts_dir and tool_info.get("type") == "python":
+        tool_path = scripts_dir / f"{tool_name}.exe" if platform.system() == "Windows" else scripts_dir / tool_name
+        if tool_path.exists():
+            return True, str(tool_path)
     
-    def install_netexec(self) -> bool:
-        """Install NetExec using pipx."""
-        if self.check_tool("netexec --version"):
-            logger.info("[OK] NetExec is already installed")
-            return True
-        
-        logger.info("Installing NetExec...")
-        
-        # Check if pipx is available
-        if not shutil.which('pipx'):
-            logger.info("pipx not found, installing...")
-            if self.distro in ['debian', 'ubuntu', 'kali']:
-                if not self.run_command(['apt-get', 'install', '-y', 'pipx'], use_sudo=True):
-                    # Fallback to pip install
-                    if not self.run_command(['pip3', 'install', '--user', 'pipx']):
-                        logger.error("Failed to install pipx")
-                        return False
-            else:
-                if not self.run_command(['pip3', 'install', '--user', 'pipx']):
-                    logger.error("Failed to install pipx")
-                    return False
-        
-        # Install NetExec
-        if not self.run_command(['pipx', 'install', 'git+https://github.com/Pennyw0rth/NetExec']):
-            logger.error("Failed to install NetExec")
-            return False
-        
-        return True
+    # Try regular command
+    try:
+        result = subprocess.run(
+            check_cmd,
+            capture_output=True,
+            timeout=5
+        )
+        if result.returncode == 0 or result.returncode == 1:  # Some tools return 1 for help
+            path = shutil.which(check_cmd[0])
+            return True, path
+    except:
+        pass
     
-    def install_onesixtyone(self) -> bool:
-        """Install OneSixtyOne SNMP scanner."""
-        if self.check_tool("onesixtyone"):
-            logger.info("[OK] OneSixtyOne is already installed")
-            return True
-        
-        logger.info("Installing OneSixtyOne...")
-        
-        if self.distro in ['debian', 'ubuntu', 'kali']:
-            # Try package manager first
-            if self.run_command(['apt-get', 'install', '-y', 'onesixtyone'], use_sudo=True):
-                return True
-        
-        # Fallback to building from source
-        logger.info("Building OneSixtyOne from source...")
-        commands = [
-            ['git', 'clone', 'https://github.com/trailofbits/onesixtyone.git', '/tmp/onesixtyone'],
-            ['make', '-C', '/tmp/onesixtyone'],
-            ['cp', '/tmp/onesixtyone/onesixtyone', '/usr/local/bin/'],
-            ['rm', '-rf', '/tmp/onesixtyone']
-        ]
-        
-        for i, cmd in enumerate(commands):
-            use_sudo = (i == 2)  # Only cp command needs sudo
-            if not self.run_command(cmd, use_sudo=use_sudo):
-                logger.error("Failed to build OneSixtyOne from source")
-                return False
-        
-        return True
+    return False, None
+
+
+def install_tool(tool_name: str, tool_info: Dict) -> bool:
+    """Install a tool."""
+    print(f"\n[*] Installing {tool_name}...")
     
-    def install_ssh_audit(self) -> bool:
-        """Install SSH-Audit."""
-        if self.check_tool("ssh-audit --help"):
-            logger.info("[OK] SSH-Audit is already installed")
-            return True
-        
-        logger.info("Installing SSH-Audit...")
-        
-        # Check if pipx is available (preferred for Python tools)
-        if shutil.which('pipx'):
-            logger.info("Installing SSH-Audit via pipx...")
-            if self.run_command(['pipx', 'install', 'ssh-audit']):
-                return True
-        
-        # Try system package manager for Kali/Debian
-        if self.distro in ['debian', 'ubuntu', 'kali']:
-            logger.info("Trying apt package manager...")
-            if self.run_command(['apt-get', 'install', '-y', 'ssh-audit'], use_sudo=True):
-                return True
-        
-        # Last resort: pip with --break-system-packages flag
-        logger.warning("Attempting pip install with --break-system-packages (not recommended)")
-        if self.run_command(['pip3', 'install', '--break-system-packages', 'ssh-audit']):
-            return True
-        
-        logger.error("Failed to install SSH-Audit")
-        logger.info("Please install manually: pipx install ssh-audit")
+    install_info = tool_info.get("install", {})
+    system = platform.system().lower()
+    
+    # Get install command
+    install_cmd = install_info.get("all", install_info.get(system))
+    
+    if not install_cmd:
+        print(f"[-] No install command available for {tool_name} on {system}")
         return False
     
-    def install_sslyze(self) -> bool:
-        """Install SSLyze."""
-        if self.check_tool("sslyze --help"):
-            logger.info("[OK] SSLyze is already installed")
-            return True
-        
-        logger.info("Installing SSLyze...")
-        
-        # Check if pipx is available (preferred for Python tools)
-        if shutil.which('pipx'):
-            logger.info("Installing SSLyze via pipx...")
-            if self.run_command(['pipx', 'install', 'sslyze']):
-                return True
-        
-        # Last resort: pip with --break-system-packages flag
-        logger.warning("Attempting pip install with --break-system-packages (not recommended)")
-        if self.run_command(['pip3', 'install', '--break-system-packages', 'sslyze']):
-            return True
-        
-        logger.error("Failed to install SSLyze")
-        logger.info("Please install manually: pipx install sslyze")
+    if install_cmd.startswith("Download from"):
+        print(f"[!] Manual installation required: {install_cmd}")
         return False
     
-    def check_all_tools(self) -> dict:
-        """Check status of all required tools."""
-        tools = {
-            'masscan': 'masscan --version',
-            'nmap': 'nmap --version',
-            'netexec': 'netexec --version',
-            'onesixtyone': 'onesixtyone',
-            'ssh-audit': 'ssh-audit --help',
-            'sslyze': 'sslyze --help'
-        }
-        
-        status = {}
-        for tool, check_cmd in tools.items():
-            status[tool] = self.check_tool(check_cmd)
-        
-        return status
+    # For pip installs, use the current Python
+    if "pip install" in install_cmd:
+        install_cmd = install_cmd.replace("pip install", f"{sys.executable} -m pip install")
     
-    def run_installation(self) -> bool:
-        """Run the complete installation process."""
-        logger.info("Starting AutoTest tool installation...")
-        logger.info(f"System: {self.system}")
-        logger.info(f"Distribution: {self.distro}")
-        
-        # Check current status
-        logger.info("\nChecking current tool status:")
-        initial_status = self.check_all_tools()
-        
-        for tool, installed in initial_status.items():
-            status = "[OK]" if installed else "[X]"
-            logger.info(f"{status} {tool}")
-        
-        # Install missing tools
-        success = True
-        
-        if not self.install_system_tools():
-            success = False
-        
-        if not self.install_netexec():
-            success = False
-        
-        if not self.install_onesixtyone():
-            success = False
-        
-        if not self.install_ssh_audit():
-            success = False
-        
-        if not self.install_sslyze():
-            success = False
-        
-        # Final status check
-        logger.info("\nFinal tool status:")
-        final_status = self.check_all_tools()
-        
-        all_installed = True
-        for tool, installed in final_status.items():
-            status = "[OK]" if installed else "[X]"
-            logger.info(f"{status} {tool}")
-            if not installed:
-                all_installed = False
-        
-        if all_installed:
-            logger.info("\n[SUCCESS] All tools installed successfully!")
-            logger.info("You can now run: python3 autotest.py <targets>")
+    print(f"    Running: {install_cmd}")
+    
+    try:
+        # Run the install command
+        if platform.system() == "Windows":
+            # Don't use shell=True on Windows with pip
+            if "pip install" in install_cmd or "-m pip" in install_cmd:
+                result = subprocess.run(install_cmd.split(), capture_output=True, text=True)
+            else:
+                result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
         else:
-            logger.warning("\n[WARNING] Some tools failed to install.")
-            logger.warning("Please install missing tools manually.")
+            result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
         
-        return success and all_installed
+        if result.returncode == 0:
+            print(f"[+] Successfully installed {tool_name}")
+            return True
+        else:
+            print(f"[-] Failed to install {tool_name}")
+            if result.stderr:
+                print(f"    Error: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        print(f"[-] Error installing {tool_name}: {e}")
+        return False
+
+
+def create_wrapper_script(tool_name: str, python_module: str, scripts_dir: Path) -> bool:
+    """Create a wrapper batch script for a Python tool on Windows."""
+    if platform.system() != "Windows":
+        return False
+        
+    wrapper_path = scripts_dir / f"{tool_name}.bat"
+    
+    try:
+        with open(wrapper_path, 'w') as f:
+            f.write(f"@echo off\n")
+            f.write(f'"{sys.executable}" -m {python_module} %*\n')
+        
+        print(f"[+] Created wrapper script: {wrapper_path}")
+        return True
+    except Exception as e:
+        print(f"[-] Failed to create wrapper: {e}")
+        return False
 
 
 def main():
-    """Main function."""
-    print("""
-+----------------------------------------------+
-|           AutoTest Tool Installer            |
-|                                              |
-|  This script will install:                   |
-|  * masscan (fast port scanner)               |
-|  * nmap (network mapper)                     |
-|  * netexec (network service enumeration)     |
-|  * onesixtyone (SNMP scanner)                |
-|  * ssh-audit (SSH configuration auditor)     |
-|  * sslyze (SSL/TLS scanner)                  |
-+----------------------------------------------+
-""")
+    """Main installation routine."""
+    print("AutoTest Tool Installer")
+    print("=" * 50)
     
-    if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help']:
-        print("Usage: python3 install_tools.py")
-        print("       sudo python3 install_tools.py")
-        print("")
-        print("This script will automatically detect your Linux distribution")
-        print("and install the required tools for AutoTest.")
-        return 0
+    # Detect Python scripts directory
+    scripts_dir = get_python_scripts_dir()
+    if scripts_dir:
+        print(f"\nPython Scripts directory: {scripts_dir}")
+        
+        # Check if it's in PATH
+        if not is_in_path(scripts_dir):
+            print(f"[!] Scripts directory is NOT in PATH")
+            
+            if platform.system() == "Windows":
+                response = input("\nAdd Scripts directory to PATH? (y/n): ")
+                if response.lower() == 'y':
+                    add_to_path_windows(scripts_dir)
+        else:
+            print(f"[+] Scripts directory is in PATH")
     
-    installer = ToolInstaller()
-    success = installer.run_installation()
+    # Check all tools
+    print("\n\nChecking required tools...")
+    print("-" * 50)
     
-    return 0 if success else 1
+    missing_tools = []
+    available_tools = []
+    
+    for tool_name, tool_info in TOOLS.items():
+        available, path = check_tool(tool_name, tool_info)
+        
+        if available:
+            print(f"[+] {tool_name:<15} Available at: {path}")
+            available_tools.append(tool_name)
+        else:
+            print(f"[-] {tool_name:<15} Not found")
+            missing_tools.append(tool_name)
+    
+    # Install missing tools
+    if missing_tools:
+        print(f"\n\nMissing tools: {', '.join(missing_tools)}")
+        response = input("\nInstall missing tools? (y/n): ")
+        
+        if response.lower() == 'y':
+            for tool_name in missing_tools:
+                tool_info = TOOLS[tool_name]
+                
+                if install_tool(tool_name, tool_info):
+                    # Check again after installation
+                    available, path = check_tool(tool_name, tool_info)
+                    
+                    if available:
+                        print(f"[+] {tool_name} is now available at: {path}")
+                    elif tool_info.get("type") == "python" and scripts_dir:
+                        # Try creating a wrapper script
+                        python_module = tool_info.get("python_module", tool_name)
+                        if create_wrapper_script(tool_name, python_module, scripts_dir):
+                            available, path = check_tool(tool_name, tool_info)
+                            if available:
+                                print(f"[+] {tool_name} is now available via wrapper")
+    
+    # Final summary
+    print("\n\nFinal Summary")
+    print("=" * 50)
+    
+    for tool_name, tool_info in TOOLS.items():
+        available, path = check_tool(tool_name, tool_info)
+        status = "[OK] Available" if available else "[FAIL] Missing"
+        print(f"{tool_name:<15} {status}")
+    
+    print("\n[*] Installation complete!")
+    
+    # Save tool paths for AutoTest
+    tool_paths = {}
+    for tool_name, tool_info in TOOLS.items():
+        available, path = check_tool(tool_name, tool_info)
+        if available and path:
+            tool_paths[tool_name] = path
+    
+    with open("tool_paths.json", 'w') as f:
+        json.dump(tool_paths, f, indent=2)
+    print(f"\n[+] Tool paths saved to tool_paths.json")
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    main()
