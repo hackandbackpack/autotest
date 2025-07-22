@@ -66,7 +66,7 @@ TOOLS = {
             "linux": "sudo apt-get install hydra",
             "darwin": "brew install hydra"
         },
-        "check_command": ["hydra", "-h"],
+        "check_command": ["hydra"],  # hydra shows help without any flags
         "type": "binary"
     },
     "onesixtyone": {
@@ -234,11 +234,24 @@ def check_tool(tool_name: str, tool_info: Dict) -> Tuple[bool, Optional[str]]:
             capture_output=True,
             timeout=5
         )
-        if result.returncode == 0 or result.returncode == 1:  # Some tools return 1 for help
-            path = shutil.which(check_cmd[0])
+        # Accept any exit code - some tools return non-zero for help
+        path = shutil.which(check_cmd[0])
+        if path:
             return True, path
     except:
         pass
+    
+    # For system tools, also check common binary locations
+    if tool_info.get("type") == "binary":
+        common_paths = [
+            f"/usr/bin/{tool_name}",
+            f"/usr/local/bin/{tool_name}",
+            f"/opt/{tool_name}/bin/{tool_name}",
+            f"/usr/sbin/{tool_name}"
+        ]
+        for path in common_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                return True, path
     
     return False, None
 
@@ -454,12 +467,34 @@ def main():
                             if available:
                                 print(f"[+] {tool_name} is now available via wrapper")
                     else:
-                        # For system packages, try rehashing or searching again
+                        # For system packages, try multiple methods to find the tool
                         # Sometimes the PATH needs to be refreshed
                         subprocess.run("hash -r", shell=True, capture_output=True)
+                        
+                        # Try to reload PATH from system
+                        if platform.system() != "Windows":
+                            # Get fresh PATH from a new shell
+                            try:
+                                fresh_path = subprocess.check_output(
+                                    ["bash", "-c", "echo $PATH"],
+                                    text=True
+                                ).strip()
+                                os.environ["PATH"] = fresh_path
+                            except:
+                                pass
+                        
+                        # Check again with refreshed environment
                         available, path = check_tool(tool_name, tool_info)
                         if available:
                             print(f"[+] {tool_name} is now available at: {path}")
+                        else:
+                            # Last resort - check if it exists at common locations
+                            common_paths = [f"/usr/bin/{tool_name}", f"/usr/local/bin/{tool_name}"]
+                            for check_path in common_paths:
+                                if os.path.exists(check_path):
+                                    print(f"[+] {tool_name} found at: {check_path}")
+                                    print("    Note: You may need to restart your terminal for PATH to update")
+                                    break
     
     # Final summary
     print("\n\nFinal Summary")
