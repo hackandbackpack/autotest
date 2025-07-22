@@ -5,7 +5,7 @@ Test all class attributes to ensure no AttributeErrors.
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath((__file__ if "__file__" in globals() else "."))))
 
 from core.task_manager import Task, TaskManager, TaskStatus, TaskPriority
 from core.discovery import Discovery

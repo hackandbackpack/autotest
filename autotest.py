@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 # Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__ if "__file__" in globals() else ".")))
 
 from core.config import Config
 from core.exceptions import AutoTestException
@@ -186,9 +186,9 @@ class AutoTest:
                 # Get pending tasks
                 with self.task_manager.lock:
                     pending_tasks = [
-                        task for task in self.task_manager.tasks.values()
-                        if task.status == TaskStatus.PENDING and
-                        self.task_manager._are_dependencies_met(task)
+                        t for t in self.task_manager.tasks.values()
+                        if t.status == TaskStatus.PENDING and
+                        self.task_manager._are_dependencies_met(t)
                     ]
                 
                 if not pending_tasks:

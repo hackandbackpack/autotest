@@ -3,6 +3,7 @@ Output management for AutoTest framework.
 """
 
 import os
+import logging
 import json
 import csv
 import xml.etree.ElementTree as ET
@@ -365,8 +366,9 @@ class OutputManager:
                     
                     if "services" in info:
                         lines.append("  Services:")
-                        for port, service in info["services"].items():
-                            lines.append(f"    {port}: {service}")
+                        # services is a list of service names, not a dict
+                        for service in info["services"]:
+                            lines.append(f"    - {service}")
         
         # Vulnerability details
         if "vulnerabilities" in results:

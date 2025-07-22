@@ -72,7 +72,7 @@ def find_class_definitions() -> Dict[str, Dict[str, Set[str]]]:
     
     for root, dirs, files in os.walk('.'):
         # Skip irrelevant directories
-        if any(skip in root for skip in ['__pycache__', '.git', 'test', 'venv']):
+        if any(skip_dir in root for skip_dir in ['__pycache__', '.git', 'test', 'venv']):
             continue
             
         for file in files:
@@ -144,7 +144,7 @@ def main():
     all_issues = []
     
     for root, dirs, files in os.walk('.'):
-        if any(skip in root for skip in ['__pycache__', '.git', 'test', 'venv']):
+        if any(skip_dir in root for skip_dir in ['__pycache__', '.git', 'test', 'venv']):
             continue
             
         for file in files:
@@ -191,6 +191,6 @@ def main():
     return all_issues
 
 if __name__ == "__main__":
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(os.path.dirname(os.path.abspath(__file__ if "__file__" in globals() else ".")))
     issues = main()
     sys.exit(0 if not issues else 1)

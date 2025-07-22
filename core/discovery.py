@@ -8,6 +8,7 @@ import subprocess
 import platform
 import concurrent.futures
 import time
+import logging
 from typing import List, Dict, Tuple, Optional, Set, Any
 from .utils import is_port_open, chunk_list
 from .exceptions import DiscoveryError, NetworkError
@@ -106,8 +107,7 @@ class Discovery:
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
             # Submit all ping tasks
             future_to_host = {
-                executor.submit(self.ping_host, host): host 
-                for host in targets
+                executor.submit(self.ping_host, h): h for h in targets
             }
             
             # Process results as they complete
@@ -249,8 +249,7 @@ class Discovery:
         with concurrent.futures.ThreadPoolExecutor(max_workers=port_threads) as executor:
             # Submit all port scan tasks
             future_to_port = {
-                executor.submit(self.scan_port, host, port): port 
-                for port in ports
+                executor.submit(self.scan_port, host, p): p for p in ports
             }
             
             # Process results as they complete

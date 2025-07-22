@@ -321,7 +321,7 @@ class InputParser:
                 return False
             
             # Label can contain alphanumeric and hyphens
-            if not all(c.isalnum() or c == '-' for c in label):
+            if not all(char.isalnum() or char == '-' for char in label):
                 return False
         
         return True

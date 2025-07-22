@@ -45,7 +45,7 @@ def check_git_status():
 def check_config_class():
     """Check Config class methods."""
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, os.path.dirname(os.path.abspath((__file__ if "__file__" in globals() else "."))))
         from core.config import Config
         
         print("\nConfig class methods:")
@@ -105,7 +105,7 @@ def main():
     print("=" * 40)
     
     # Change to script directory
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(os.path.dirname(os.path.abspath((__file__ if "__file__" in globals() else "."))))
     
     all_ok = True
     
