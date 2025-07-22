@@ -282,7 +282,7 @@ class AutoTest:
             logging.info(f"Phase 2: Service enumeration on {len(discovered_hosts)} hosts")
             
             # Initialize task manager
-            self.task_manager = TaskManager(self.config)
+            self.task_manager = TaskManager(max_workers=self.config.get('max_threads', 10))
             
             # Create tasks from discovery results
             self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins)

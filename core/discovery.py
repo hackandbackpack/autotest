@@ -89,6 +89,19 @@ class Discovery:
             # Use default ports from config
             port_list = [22, 80, 443, 445, 3389, 8080]
         
+        import logging
+        logging.info(f"Starting host discovery on {total} targets...")
+        logging.info(f"Using {self.max_threads} concurrent threads")
+        
+        # Progress tracking
+        last_progress_update = time.time()
+        progress_interval = 10  # Update every 10 seconds
+        start_time = time.time()
+        
+        # First, do a ping sweep to find live hosts
+        logging.info("Phase 1a: Ping sweep to identify live hosts...")
+        live_hosts = []
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
             # Submit all ping tasks
             future_to_host = {
@@ -103,8 +116,46 @@ class Discovery:
                 
                 try:
                     if future.result():
-                        # Host is alive, scan its ports
-                        open_ports = self.scan_ports(host, port_list)
+                        live_hosts.append(host)
+                except Exception:
+                    # Skip hosts that cause errors
+                    pass
+                
+                # Update progress
+                if progress_callback:
+                    progress_callback(completed, total, host)
+                
+                # Log progress updates periodically
+                current_time = time.time()
+                if current_time - last_progress_update >= progress_interval:
+                    percent_complete = (completed / total) * 100
+                    logging.info(f"Ping sweep progress: {completed}/{total} hosts checked ({percent_complete:.1f}%) - {len(live_hosts)} hosts responding")
+                    last_progress_update = current_time
+        
+        logging.info(f"Ping sweep complete: {len(live_hosts)} hosts responded to ping")
+        
+        # Phase 2: Port scan live hosts
+        if live_hosts:
+            logging.info(f"Phase 1b: Port scanning {len(live_hosts)} live hosts on {len(port_list)} ports...")
+            
+            # Reset for port scanning phase
+            completed = 0
+            total = len(live_hosts)
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+                # Submit port scan tasks for each live host
+                future_to_host = {
+                    executor.submit(self.scan_ports, host, port_list): host 
+                    for host in live_hosts
+                }
+                
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(future_to_host):
+                    host = future_to_host[future]
+                    completed += 1
+                    
+                    try:
+                        open_ports = future.result()
                         if open_ports:
                             discovered_hosts[host] = {
                                 'ports': open_ports,
@@ -115,20 +166,30 @@ class Discovery:
                             for port in open_ports:
                                 service = self.get_service_name(port)
                                 discovered_hosts[host]['services'][str(port)] = service
-                except Exception:
-                    # Skip hosts that cause errors
-                    pass
-                
-                # Update progress
-                if progress_callback:
-                    progress_callback(completed, total, host)
+                                
+                            logging.info(f"Host {host}: Found {len(open_ports)} open ports: {', '.join(map(str, open_ports[:10]))}{'...' if len(open_ports) > 10 else ''}")
+                    except Exception as e:
+                        logging.debug(f"Error scanning {host}: {e}")
+                    
+                    # Log port scan progress
+                    current_time = time.time()
+                    if current_time - last_progress_update >= progress_interval:
+                        percent_complete = (completed / total) * 100
+                        logging.info(f"Port scan progress: {completed}/{total} hosts scanned ({percent_complete:.1f}%) - {len(discovered_hosts)} hosts with open ports")
+                        last_progress_update = current_time
         
         # Store for export
         self._discovered_hosts = discovered_hosts
-        self._total_hosts = total
-        self._live_hosts_count = len(discovered_hosts)
-        self._total_ports = len(port_list) * len(discovered_hosts)
+        self._total_hosts = len(targets)
+        self._live_hosts_count = len(live_hosts)
+        self._total_ports = len(port_list) * len(live_hosts)
         self._open_ports_count = sum(len(h['ports']) for h in discovered_hosts.values())
+        
+        # Final summary
+        elapsed = time.time() - start_time
+        logging.info(f"Discovery complete in {elapsed:.1f} seconds")
+        logging.info(f"Results: {len(live_hosts)} hosts responded to ping, {len(discovered_hosts)} hosts have open ports")
+        logging.info(f"Total open ports discovered: {self._open_ports_count}")
         
         return discovered_hosts
     
