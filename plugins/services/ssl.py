@@ -6,8 +6,9 @@ import logging
 import subprocess
 import json
 import shutil
+import sys
 import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
 from ..base import Plugin, PluginType, plugin
@@ -41,9 +42,23 @@ class SSLPlugin(Plugin):
         Returns:
             Path to sslyze executable or None
         """
+        # First try regular command
         if shutil.which(self.tool_name):
             return self.tool_name
-        logger.warning("sslyze not found in PATH")
+        
+        # Try running as Python module
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "sslyze", "--help"],
+                capture_output=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return f"{sys.executable} -m sslyze"
+        except:
+            pass
+            
+        logger.warning("sslyze not found in PATH or as Python module")
         return None
     
     def get_required_params(self) -> List[str]:
@@ -90,6 +105,21 @@ class SSLPlugin(Plugin):
         
         return True
     
+    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+        """Check if sslyze is available using custom logic."""
+        if skip_check or getattr(self, 'skip_tool_check', False):
+            return True, {}
+        
+        tool_path = self._find_tool()
+        if tool_path:
+            return True, {self.tool_name: {"available": True, "path": tool_path}}
+        else:
+            return False, {self.tool_name: {
+                "available": False, 
+                "install_command": "pip install sslyze",
+                "path": None
+            }}
+    
     def execute(self, target: str, **kwargs) -> Dict[str, Any]:
         """Execute SSL/TLS scan task."""
         if not self.validate_params(target=target, **kwargs):
@@ -125,12 +155,20 @@ class SSLPlugin(Plugin):
             txt_output = output_dir / f"ssl_{target}_{port}.txt"
             
             # Build SSLyze command for JSON output
-            cmd = [
-                tool_path,
-                "--json_out", str(json_output),
-                "--regular",  # Regular scan (includes cipher suites, protocols, etc.)
-                f"{target}:{port}"
-            ]
+            # Handle case where tool_path might be "python -m sslyze"
+            if " " in tool_path:
+                cmd = tool_path.split() + [
+                    "--json_out", str(json_output),
+                    "--regular",  # Regular scan (includes cipher suites, protocols, etc.)
+                    f"{target}:{port}"
+                ]
+            else:
+                cmd = [
+                    tool_path,
+                    "--json_out", str(json_output),
+                    "--regular",  # Regular scan (includes cipher suites, protocols, etc.)
+                    f"{target}:{port}"
+                ]
             
             # Add additional scan options based on kwargs
             if kwargs.get('heartbleed', True):

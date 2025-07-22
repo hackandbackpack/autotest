@@ -156,4 +156,4 @@ credentials/
 raw_output/
 nmap_output/
 nuclei_output/
-metasploit_output/
+metasploit_output/output/
