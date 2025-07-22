@@ -1,0 +1,73 @@
+{
+  "metadata": {
+    "timestamp": "2025-07-22T11:06:49.478380",
+    "config_file": null,
+    "output_directory": "output\\autotest_scan_2025-07-22_11-06-49",
+    "autotest_version": "1.0.0"
+  },
+  "configuration": {
+    "output_dir": "test_output",
+    "log_level": "INFO",
+    "max_threads": 10,
+    "timeout": 30,
+    "discovery": {
+      "ping_timeout": 1,
+      "port_scan_timeout": 1,
+      "default_ports": "21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5900,8080",
+      "fast_scan_ports": "22,80,443,445,3389,8080",
+      "max_concurrent_hosts": 100,
+      "max_concurrent_ports": 1000
+    },
+    "tools": {
+      "nmap": {
+        "enabled": true,
+        "path": "nmap",
+        "default_args": "-sV -sC",
+        "timeout_multiplier": 2
+      },
+      "nikto": {
+        "enabled": true,
+        "path": "nikto",
+        "default_args": "-h",
+        "timeout_multiplier": 3
+      },
+      "dirb": {
+        "enabled": true,
+        "path": "dirb",
+        "wordlist": "/usr/share/wordlists/dirb/common.txt",
+        "timeout_multiplier": 3
+      },
+      "sqlmap": {
+        "enabled": true,
+        "path": "sqlmap",
+        "default_args": "--batch --random-agent",
+        "timeout_multiplier": 4
+      },
+      "hydra": {
+        "enabled": true,
+        "path": "hydra",
+        "default_args": "-V",
+        "timeout_multiplier": 3
+      }
+    },
+    "output": {
+      "format": "json",
+      "pretty_print": true,
+      "include_timestamps": true,
+      "save_raw_output": false,
+      "compress": false
+    },
+    "security": {
+      "verify_ssl": true,
+      "follow_redirects": true,
+      "max_redirects": 10,
+      "user_agent": "AutoTest/1.0"
+    },
+    "performance": {
+      "chunk_size": 1024,
+      "buffer_size": 8192,
+      "max_retries": 3,
+      "retry_delay": 1
+    }
+  }
+}

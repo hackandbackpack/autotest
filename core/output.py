@@ -40,6 +40,27 @@ class OutputManager:
         # Create session directory
         self.session_dir = os.path.join(self.output_dir, self.session_id)
         create_directory(self.session_dir)
+        
+        # Create subdirectories for better organization
+        self.logs_dir = os.path.join(self.session_dir, "logs")
+        self.services_dir = os.path.join(self.session_dir, "services")
+        self.raw_dir = os.path.join(self.session_dir, "raw")
+        self.reports_dir = os.path.join(self.session_dir, "reports")
+        
+        for directory in [self.logs_dir, self.services_dir, self.raw_dir, self.reports_dir]:
+            create_directory(directory)
+        
+        # Initialize consolidated logs
+        self.consolidated_log_path = os.path.join(self.logs_dir, "consolidated_tools.log")
+        self.security_findings_path = os.path.join(self.reports_dir, "security_findings.txt")
+        
+        # Initialize consolidated log with header
+        with open(self.consolidated_log_path, 'w') as f:
+            f.write("=" * 80 + "\n")
+            f.write("AutoTest Consolidated Tool Output Log\n")
+            f.write(f"Session: {self.session_id}\n")
+            f.write(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 80 + "\n\n")
     
     def save_results(self, results: Dict[str, Any], filename: str,
                     format: Optional[str] = None, compress: bool = False) -> str:
@@ -68,7 +89,11 @@ class OutputManager:
         if compress:
             ext += ".gz"
         
-        filepath = os.path.join(self.session_dir, f"{filename}.{ext}")
+        # Save reports in the reports directory for better organization
+        if format in ["txt", "json", "xml", "csv"] and ("report" in filename or "scan_results" in filename):
+            filepath = os.path.join(self.reports_dir, f"{filename}.{ext}")
+        else:
+            filepath = os.path.join(self.session_dir, f"{filename}.{ext}")
         
         try:
             # Format results
@@ -107,10 +132,6 @@ class OutputManager:
         Returns:
             Path to saved file
         """
-        # Create raw output directory
-        raw_dir = os.path.join(self.session_dir, "raw")
-        create_directory(raw_dir)
-        
         # Generate filename
         timestamp = get_timestamp("%Y%m%d_%H%M%S")
         if target:
@@ -118,7 +139,7 @@ class OutputManager:
         else:
             filename = f"{tool_name}_{timestamp}.txt"
         
-        filepath = os.path.join(raw_dir, filename)
+        filepath = os.path.join(self.raw_dir, filename)
         
         # Save output
         self._save_plain(filepath, output)
@@ -494,3 +515,138 @@ class OutputManager:
             logging.error(f"Failed to save JSON results: {e}")
         
         return generated
+    
+    def log_tool_execution(self, tool_name: str, target: str, command: str, 
+                          output: str, service: Optional[str] = None,
+                          execution_time: Optional[float] = None) -> None:
+        """
+        Log tool execution to consolidated log and service-specific log.
+        
+        Args:
+            tool_name: Name of the tool executed
+            target: Target host/port
+            command: Command that was executed
+            output: Tool output
+            service: Service name (for service-specific logs)
+            execution_time: Execution time in seconds
+        """
+        # Create log entry
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        separator = "-" * 80
+        
+        log_entry = f"\n{separator}\n"
+        log_entry += f"Tool: {tool_name}\n"
+        log_entry += f"Target: {target}\n"
+        log_entry += f"Service: {service or 'Unknown'}\n"
+        log_entry += f"Timestamp: {timestamp}\n"
+        if execution_time:
+            log_entry += f"Execution Time: {execution_time:.2f} seconds\n"
+        log_entry += f"Command: {command}\n"
+        log_entry += f"{separator}\n"
+        log_entry += f"Output:\n{output}\n"
+        log_entry += f"{separator}\n\n"
+        
+        # Append to consolidated log
+        with open(self.consolidated_log_path, 'a', encoding='utf-8') as f:
+            f.write(log_entry)
+        
+        # Also save to service-specific log if service is provided
+        if service:
+            service_log_path = os.path.join(self.services_dir, f"{sanitize_filename(service.lower())}_scan.log")
+            
+            # Initialize service log if it doesn't exist
+            if not os.path.exists(service_log_path):
+                with open(service_log_path, 'w', encoding='utf-8') as f:
+                    f.write(f"{'=' * 80}\n")
+                    f.write(f"{service} Service Scan Log\n")
+                    f.write(f"Session: {self.session_id}\n")
+                    f.write(f"{'=' * 80}\n\n")
+            
+            # Append to service log
+            with open(service_log_path, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+    
+    def save_security_findings(self, findings: List[Dict[str, Any]], 
+                              update: bool = True) -> str:
+        """
+        Save security findings to a dedicated summary file.
+        
+        Args:
+            findings: List of security findings
+            update: Whether to append to existing findings or overwrite
+            
+        Returns:
+            Path to security findings file
+        """
+        # Group findings by severity
+        critical = [f for f in findings if f.get('severity') == 'critical']
+        high = [f for f in findings if f.get('severity') == 'high']
+        medium = [f for f in findings if f.get('severity') == 'medium']
+        low = [f for f in findings if f.get('severity') == 'low']
+        info = [f for f in findings if f.get('severity', 'info') == 'info']
+        
+        # Create findings report
+        report_lines = []
+        
+        if not update:
+            report_lines.append("=" * 80)
+            report_lines.append("SECURITY FINDINGS SUMMARY")
+            report_lines.append(f"Session: {self.session_id}")
+            report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            report_lines.append("=" * 80)
+            report_lines.append("")
+        
+        # Summary statistics
+        report_lines.append("STATISTICS:")
+        report_lines.append(f"  Critical: {len(critical)}")
+        report_lines.append(f"  High:     {len(high)}")
+        report_lines.append(f"  Medium:   {len(medium)}")
+        report_lines.append(f"  Low:      {len(low)}")
+        report_lines.append(f"  Info:     {len(info)}")
+        report_lines.append(f"  Total:    {len(findings)}")
+        report_lines.append("")
+        
+        # Detailed findings by severity
+        for severity, severity_findings in [("CRITICAL", critical), ("HIGH", high), 
+                                           ("MEDIUM", medium), ("LOW", low), ("INFO", info)]:
+            if severity_findings:
+                report_lines.append("=" * 80)
+                report_lines.append(f"{severity} SEVERITY FINDINGS")
+                report_lines.append("=" * 80)
+                report_lines.append("")
+                
+                for finding in severity_findings:
+                    target = finding.get('target', 'Unknown')
+                    port = finding.get('port', '')
+                    if port:
+                        target = f"{target}:{port}"
+                    
+                    report_lines.append(f"[{severity}] {finding.get('title', 'Unknown Issue')}")
+                    report_lines.append(f"Target: {target}")
+                    report_lines.append(f"Type: {finding.get('type', 'Unknown')}")
+                    
+                    if finding.get('description'):
+                        report_lines.append(f"Description: {finding['description']}")
+                    
+                    if finding.get('recommendation'):
+                        report_lines.append(f"Recommendation: {finding['recommendation']}")
+                    
+                    if finding.get('details'):
+                        report_lines.append("Details:")
+                        detail_str = json.dumps(finding['details'], indent=2)
+                        for line in detail_str.split('\n'):
+                            report_lines.append(f"  {line}")
+                    
+                    report_lines.append("")  # Empty line between findings
+        
+        report_lines.append("")
+        report_lines.append("=" * 80)
+        report_lines.append(f"End of findings report - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report_lines.append("=" * 80)
+        
+        # Save report
+        mode = 'a' if update and os.path.exists(self.security_findings_path) else 'w'
+        with open(self.security_findings_path, mode, encoding='utf-8') as f:
+            f.write('\n'.join(report_lines) + '\n\n')
+        
+        return self.security_findings_path

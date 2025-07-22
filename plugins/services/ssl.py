@@ -8,6 +8,7 @@ import json
 import shutil
 import sys
 import datetime
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
@@ -212,24 +213,46 @@ class SSLPlugin(Plugin):
             
             # Run SSLyze
             logger.debug(f"Running command: {' '.join(cmd)}")
+            start_time = time.time()
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout
             )
+            execution_time = time.time() - start_time
             
             # Save text output
             if result.stdout:
                 with open(txt_output, 'w') as f:
                     f.write(result.stdout)
                 results["text_output"] = str(txt_output)
+                
+                # Log to output manager if available
+                if hasattr(self, 'output_manager') and self.output_manager:
+                    self.output_manager.log_tool_execution(
+                        tool_name="sslyze",
+                        target=f"{target}:{port}",
+                        command=' '.join(cmd),
+                        output=result.stdout,
+                        service="SSL/TLS",
+                        execution_time=execution_time
+                    )
             
             # Parse results
             findings = self._parse_results(json_output, result.stdout)
             results["findings"].extend(findings)
             results["json_output"] = str(json_output)
             results["command"] = ' '.join(cmd)
+            
+            # Save security findings if available
+            if findings and hasattr(self, 'output_manager') and self.output_manager:
+                # Add target and port to each finding
+                for finding in findings:
+                    finding['target'] = target
+                    finding['port'] = port
+                    finding['service'] = 'SSL/TLS'
+                self.output_manager.save_security_findings(findings)
             
         except subprocess.TimeoutExpired:
             logger.error(f"SSL/TLS scan timed out for {target}:{port}")

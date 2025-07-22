@@ -113,26 +113,31 @@ class AutoTest:
         try:
             # SMB plugin
             smb_plugin = SMBPlugin()
+            smb_plugin.output_manager = self.output_manager
             self.plugins.append(smb_plugin)
             logging.info(f"Loaded plugin: SMB")
             
             # RDP plugin
             rdp_plugin = RDPPlugin()
+            rdp_plugin.output_manager = self.output_manager
             self.plugins.append(rdp_plugin)
             logging.info(f"Loaded plugin: RDP")
             
             # SNMP plugin
             snmp_plugin = SNMPPlugin()
+            snmp_plugin.output_manager = self.output_manager
             self.plugins.append(snmp_plugin)
             logging.info(f"Loaded plugin: SNMP")
             
             # SSH plugin
             ssh_plugin = SSHPlugin()
+            ssh_plugin.output_manager = self.output_manager
             self.plugins.append(ssh_plugin)
             logging.info(f"Loaded plugin: SSH")
             
             # SSL/TLS plugin
             ssl_plugin = SSLPlugin()
+            ssl_plugin.output_manager = self.output_manager
             self.plugins.append(ssl_plugin)
             logging.info(f"Loaded plugin: SSL/TLS")
             
@@ -315,6 +320,24 @@ class AutoTest:
         for host_data in results['hosts'].values():
             host_data['open_ports'] = sorted(list(host_data['open_ports']))
             host_data['services'] = sorted(list(host_data['services']))
+        
+        # Collect all security findings from plugin results
+        all_findings = []
+        for host, host_data in results['hosts'].items():
+            for task in host_data['tasks']:
+                if task.get('result') and isinstance(task['result'], dict):
+                    findings = task['result'].get('findings', [])
+                    # Add host and port info to each finding
+                    for finding in findings:
+                        finding['target'] = host
+                        finding['port'] = task.get('port', '')
+                        finding['service'] = task.get('service', '')
+                        all_findings.append(finding)
+        
+        # Generate security findings report if there are any findings
+        if all_findings:
+            findings_report_path = self.output_manager.save_security_findings(all_findings, update=False)
+            logging.info(f"Generated security findings report: {findings_report_path}")
         
         # Generate reports in configured formats
         generated_reports = self.output_manager.generate_reports(results)
