@@ -310,9 +310,25 @@ def create_wrapper_script(tool_name: str, python_module: str, scripts_dir: Path)
         return False
 
 
+def check_tools() -> Tuple[bool, List[str]]:
+    """Check if all required tools are available.
+    
+    Returns:
+        Tuple of (all_available, missing_tools)
+    """
+    missing_tools = []
+    
+    for tool_name, tool_info in TOOLS.items():
+        available, _ = check_tool(tool_name, tool_info)
+        if not available:
+            missing_tools.append(tool_name)
+    
+    return len(missing_tools) == 0, missing_tools
+
+
 def main():
     """Main installation routine."""
-    print("AutoTest Tool Installer")
+    print("AutoTest Installation & Setup")
     print("=" * 50)
     
     # Detect Python scripts directory

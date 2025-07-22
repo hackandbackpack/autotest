@@ -17,22 +17,32 @@ AutoTest is a comprehensive automated penetration testing framework that orchest
 ### Prerequisites
 
 - Python 3.8+
-- Linux operating system (Kali Linux recommended)
-- Security tools: nmap, nuclei, metasploit, nikto, dirb, etc.
+- Windows, Linux, or macOS
+- Required tools will be installed automatically
 
 ### Install from Source
 
 ```bash
-git clone https://github.com/example/autotest.git
+git clone https://github.com/hackandbackpack/autotest.git
 cd autotest
 pip install -r requirements.txt
-python setup.py install
+
+# Run the installation script to set up required tools
+python installation.py
 ```
 
-### Quick Install
+### Tool Setup
 
+AutoTest requires several security tools. The `installation.py` script will:
+- Check for required tools (nmap, masscan, sslyze, etc.)
+- Install Python-based tools via pip
+- Add Python Scripts directory to PATH (Windows)
+- Create wrapper scripts if needed
+- Save tool paths for AutoTest to use
+
+Run the installer:
 ```bash
-pip install autotest-pentest
+python installation.py
 ```
 
 ## Usage
@@ -41,13 +51,16 @@ pip install autotest-pentest
 
 ```bash
 # Scan a single target
-autotest 192.168.1.1
+python autotest.py 192.168.1.1
 
 # Scan a network range
-autotest 192.168.1.0/24
+python autotest.py 192.168.1.0/24
 
 # Scan multiple targets
-autotest 10.0.0.1 10.0.0.2 example.com
+python autotest.py 10.0.0.1 10.0.0.2 example.com
+
+# Skip tool checking (if tools are already installed)
+python autotest.py --skip-tool-check 192.168.1.1
 
 # Scan from file
 autotest targets.txt

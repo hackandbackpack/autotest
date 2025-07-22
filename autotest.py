@@ -468,28 +468,28 @@ def main(
             # Exit after checking
             sys.exit(0 if available_count == total_count else 1)
         
-        # Set skip tool check flag for plugins if needed
-        if skip_tool_check:
+        # Check for required tools unless skipping
+        if not skip_tool_check:
+            # Import and check tools
+            try:
+                from installation import check_tools
+                all_tools_available, missing_tools = check_tools()
+                
+                if not all_tools_available:
+                    console.print("[red]Error:[/red] Required tools are missing:")
+                    for tool in missing_tools:
+                        console.print(f"  [-] {tool}")
+                    console.print("\n[yellow]Please run:[/yellow] python installation.py")
+                    console.print("[dim]Or use --skip-tool-check to bypass this check (some features may not work)[/dim]")
+                    sys.exit(1)
+            except ImportError:
+                console.print("[yellow]Warning:[/yellow] Could not import installation module for tool checking")
+                console.print("[dim]Some tools may be missing. Run 'python installation.py' to set up tools.[/dim]")
+        else:
+            # Set skip tool check flag for plugins
             for plugin in app.plugins:
                 if hasattr(plugin, 'skip_tool_check'):
                     plugin.skip_tool_check = True
-        else:
-            # Check for critical tools (masscan and nmap) unless skipping
-            critical_tools = ['masscan', 'nmap']
-            critical_status = ToolChecker.check_required_tools(critical_tools)
-            missing_critical = []
-            
-            for tool, status in critical_status.items():
-                if not status['available']:
-                    missing_critical.append((tool, status['install_command']))
-            
-            if missing_critical:
-                console.print("[red]Error:[/red] Critical tools missing for discovery phase:")
-                for tool, install_cmd in missing_critical:
-                    console.print(f"  [-] {tool}: [yellow]{install_cmd}[/yellow]")
-                console.print("\nThese tools are required for network discovery.")
-                console.print("Use --skip-tool-check to bypass this check (discovery may fail).")
-                sys.exit(1)
         
         # Parse targets
         input_parser = InputParser()
