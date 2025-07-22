@@ -281,10 +281,51 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
             print(f"[+] Successfully installed {tool_name}")
             return True
         else:
-            print(f"[-] Failed to install {tool_name}")
-            if result.stderr:
-                print(f"    Error: {result.stderr}")
-            return False
+            # Check for externally managed environment error
+            if "externally-managed-environment" in result.stderr:
+                print(f"[-] System Python is externally managed")
+                
+                # Try with pipx first
+                print(f"    Trying pipx install {tool_name}...")
+                pipx_result = subprocess.run(
+                    f"pipx install {tool_name}",
+                    shell=True,
+                    capture_output=True,
+                    text=True
+                )
+                
+                if pipx_result.returncode == 0:
+                    print(f"[+] Successfully installed {tool_name} with pipx")
+                    return True
+                elif "pipx: command not found" in pipx_result.stderr or "pipx: not found" in pipx_result.stderr:
+                    print(f"    pipx not available")
+                    
+                    # Try with --user --break-system-packages
+                    print(f"    Trying pip install with --user --break-system-packages...")
+                    user_install_cmd = install_cmd + " --user --break-system-packages"
+                    user_result = subprocess.run(
+                        user_install_cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if user_result.returncode == 0:
+                        print(f"[+] Successfully installed {tool_name} with --user flag")
+                        return True
+                    else:
+                        print(f"[-] Failed to install {tool_name}")
+                        print(f"    Consider using: sudo apt install python3-{tool_name}")
+                        print(f"    Or install pipx: sudo apt install pipx")
+                        return False
+                else:
+                    print(f"[-] pipx failed: {pipx_result.stderr}")
+                    return False
+            else:
+                print(f"[-] Failed to install {tool_name}")
+                if result.stderr:
+                    print(f"    Error: {result.stderr}")
+                return False
             
     except Exception as e:
         print(f"[-] Error installing {tool_name}: {e}")
