@@ -568,8 +568,8 @@ class OutputManager:
     def save_security_findings(self, findings: List[Dict[str, Any]], 
                               update: bool = True) -> str:
         """
-        Save security findings to a dedicated summary file.
-        Groups findings by vulnerability type and shows all affected hosts.
+        Save security findings in a clean, copy-paste friendly format.
+        Groups findings by type and lists affected hosts.
         
         Args:
             findings: List of security findings
@@ -580,122 +580,142 @@ class OutputManager:
         """
         # Group findings by type and title
         findings_by_type = {}
+        
+        # Map finding types to cleaner titles
+        type_title_map = {
+            'self_signed_cert': 'Self-signed',
+            'cert_expired': 'Expired',
+            'cert_expiring': 'Expiring Soon',
+            'cert_validation': 'Certificate Validation Failed',
+            'weak_signature': 'Weak Signature',
+            'weak_rsa': 'Weak RSA',
+            'weak_ec': 'Weak EC',
+            'weak_protocol': 'Deprecated Protocols',
+            'weak_cipher': 'Weak Ciphers',
+            'medium_cipher': 'Medium Ciphers',
+            'heartbleed': 'Heartbleed',
+            'compression': 'TLS Compression',
+            'ssl_vulnerability': 'SSL Vulnerability',
+            'ssl_weakness': 'SSL Weakness'
+        }
+        
         for finding in findings:
-            # Create a key based on type and title
             finding_type = finding.get('type', 'unknown')
             finding_title = finding.get('title', 'Unknown Issue')
-            severity = finding.get('severity', 'info')
             
-            key = (finding_type, finding_title, severity)
+            # Use cleaner title if available
+            clean_title = type_title_map.get(finding_type, finding_title)
             
-            if key not in findings_by_type:
-                findings_by_type[key] = {
-                    'type': finding_type,
-                    'title': finding_title,
-                    'severity': severity,
-                    'description': finding.get('description', ''),
-                    'recommendation': finding.get('recommendation', ''),
-                    'affected_hosts': []
-                }
+            if clean_title not in findings_by_type:
+                findings_by_type[clean_title] = []
             
-            # Add the affected host
+            # Create host entry
             target = finding.get('target', 'Unknown')
             port = finding.get('port', '')
-            service = finding.get('service', '')
             details = finding.get('details', {})
             
-            host_info = {
-                'host': target,
-                'port': port,
-                'service': service,
-                'details': details
-            }
+            host_entry = f"{target}"
+            if port:
+                host_entry += f":{port}"
             
-            findings_by_type[key]['affected_hosts'].append(host_info)
-        
-        # Sort findings by severity
-        severity_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3, 'info': 4}
-        sorted_findings = sorted(findings_by_type.items(), 
-                               key=lambda x: (severity_order.get(x[0][2], 5), x[0][1]))
+            # Add additional context for certain finding types
+            additional_info = ""
+            
+            # For weak protocols, show which protocols
+            if finding_type == 'weak_protocol' and isinstance(details, dict):
+                protocol = details.get('protocol', '')
+                if protocol:
+                    # Convert tls_1_0 to TLSv1.0 format
+                    protocol_str = protocol.replace('_', '.').replace('tls.', 'TLSv').replace('ssl.', 'SSLv')
+                    additional_info = protocol_str
+            
+            # For weak ciphers, show cipher names
+            elif finding_type in ['weak_cipher', 'medium_cipher'] and isinstance(details, dict):
+                cipher_info = details.get('cipher_suite', {})
+                if isinstance(cipher_info, dict):
+                    cipher_name = cipher_info.get('name', '')
+                    if cipher_name:
+                        additional_info = cipher_name
+                elif isinstance(details, dict) and 'name' in details:
+                    additional_info = details['name']
+            
+            # For weak signatures, show type
+            elif finding_type == 'weak_signature' and isinstance(details, dict):
+                sig_algorithm = details.get('signature_algorithm', '')
+                if sig_algorithm:
+                    additional_info = f"{sig_algorithm} Certificate Signature"
+            
+            # For weak RSA, show key size
+            elif finding_type == 'weak_rsa' and isinstance(details, dict):
+                key_size = details.get('key_size', '')
+                if key_size:
+                    additional_info = f"{key_size} bits RSA"
+            
+            # For weak EC, show curve info
+            elif finding_type == 'weak_ec' and isinstance(details, dict):
+                curve = details.get('curve', '')
+                bits = details.get('bits', '')
+                if bits:
+                    additional_info = f"{bits} bits EC"
+                elif curve:
+                    additional_info = curve
+            
+            # Build the entry for this host
+            entry = {'host': host_entry, 'info': additional_info}
+            
+            # Check if this exact host+info combo already exists
+            exists = False
+            for existing in findings_by_type[clean_title]:
+                if existing['host'] == entry['host'] and existing['info'] == entry['info']:
+                    exists = True
+                    break
+            
+            if not exists:
+                findings_by_type[clean_title].append(entry)
         
         # Create findings report
         report_lines = []
         
         if not update:
-            report_lines.append("=" * 80)
-            report_lines.append("SECURITY FINDINGS SUMMARY")
-            report_lines.append(f"Session: {self.session_id}")
+            report_lines.append("SECURITY FINDINGS")
             report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            report_lines.append("=" * 80)
             report_lines.append("")
         
-        # Count findings by severity
-        severity_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0, 'info': 0}
-        for key, _ in sorted_findings:
-            severity_counts[key[2]] = severity_counts.get(key[2], 0) + 1
-        
-        # Summary statistics
-        report_lines.append("FINDINGS OVERVIEW:")
-        report_lines.append(f"  Critical: {severity_counts['critical']} issues")
-        report_lines.append(f"  High:     {severity_counts['high']} issues")
-        report_lines.append(f"  Medium:   {severity_counts['medium']} issues")
-        report_lines.append(f"  Low:      {severity_counts['low']} issues")
-        report_lines.append(f"  Info:     {severity_counts['info']} issues")
-        report_lines.append(f"  Total:    {len(sorted_findings)} unique issues")
-        report_lines.append("")
-        
-        # Detailed findings grouped by type
-        current_severity = None
-        for (finding_type, finding_title, severity), finding_data in sorted_findings:
-            # Add severity header if changed
-            if severity != current_severity:
-                report_lines.append("=" * 80)
-                report_lines.append(f"{severity.upper()} SEVERITY FINDINGS")
-                report_lines.append("=" * 80)
-                report_lines.append("")
-                current_severity = severity
-            
-            # Finding header
-            report_lines.append(f"[{severity.upper()}] {finding_title}")
-            report_lines.append(f"Type: {finding_type}")
-            
-            if finding_data['description']:
-                report_lines.append(f"Description: {finding_data['description']}")
-            
-            if finding_data['recommendation']:
-                report_lines.append(f"Recommendation: {finding_data['recommendation']}")
-            
-            # Affected hosts
-            report_lines.append(f"\nAffected Hosts ({len(finding_data['affected_hosts'])} total):")
-            
-            # Group hosts by similar details for cleaner output
-            for host_info in finding_data['affected_hosts']:
-                host_str = f"  - {host_info['host']}"
-                if host_info['port']:
-                    host_str += f":{host_info['port']}"
-                if host_info['service']:
-                    host_str += f" ({host_info['service']})"
-                report_lines.append(host_str)
+        # Output findings in clean format
+        for finding_title, hosts in findings_by_type.items():
+            if hosts:
+                report_lines.append(finding_title)
                 
-                # Show relevant details (but keep it concise)
-                if host_info['details'] and isinstance(host_info['details'], dict):
-                    # Only show key details, not entire objects
-                    important_keys = ['cipher_suite', 'protocol', 'algorithm', 'key_size', 
-                                    'error_message', 'version', 'name']
-                    for key in important_keys:
-                        if key in host_info['details']:
-                            report_lines.append(f"    • {key}: {host_info['details'][key]}")
-            
-            report_lines.append("")  # Empty line between findings
-        
-        report_lines.append("")
-        report_lines.append("=" * 80)
-        report_lines.append("END OF SECURITY FINDINGS SUMMARY")
-        report_lines.append("=" * 80)
+                # Group hosts by additional info
+                hosts_by_info = {}
+                for host_data in hosts:
+                    info = host_data['info']
+                    if info not in hosts_by_info:
+                        hosts_by_info[info] = []
+                    hosts_by_info[info].append(host_data['host'])
+                
+                # Output hosts
+                if len(hosts_by_info) == 1 and '' in hosts_by_info:
+                    # No additional info - just list hosts
+                    for host in sorted(hosts_by_info['']):
+                        report_lines.append(host)
+                else:
+                    # Group by additional info
+                    for info, host_list in sorted(hosts_by_info.items()):
+                        if info:
+                            # Show hosts with their additional info
+                            for host in sorted(host_list):
+                                report_lines.append(f"{host} {info}")
+                        else:
+                            # Just the host
+                            for host in sorted(host_list):
+                                report_lines.append(host)
+                
+                report_lines.append("")  # Empty line between finding types
         
         # Save report
         mode = 'a' if update and os.path.exists(self.security_findings_path) else 'w'
         with open(self.security_findings_path, mode, encoding='utf-8') as f:
-            f.write('\n'.join(report_lines) + '\n\n')
+            f.write('\n'.join(report_lines) + '\n')
         
         return self.security_findings_path
