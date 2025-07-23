@@ -44,6 +44,15 @@ class RDPPlugin(Plugin):
         logger.warning("NetExec not found in PATH")
         return "netexec"
     
+    def _is_netexec_available(self) -> bool:
+        """Check if NetExec is actually available."""
+        try:
+            result = subprocess.run([self.netexec_path, "--version"], 
+                                 capture_output=True, text=True, timeout=5)
+            return result.returncode == 0 and ("netexec" in result.stdout.lower() or "nxc" in result.stdout.lower())
+        except:
+            return False
+    
     def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
         """Check if NetExec is available using custom logic."""
         if skip_check or getattr(self, 'skip_tool_check', False):
@@ -142,8 +151,25 @@ class RDPPlugin(Plugin):
             "port": kwargs.get("port", 3389),
             "vulnerabilities": [],
             "configuration": {},
-            "findings": {}
+            "findings": []
         }
+        
+        # Check if NetExec is available
+        if self.netexec_path == "netexec" and not self._is_netexec_available():
+            logger.warning("NetExec not available, performing limited RDP checks")
+            # Still check if port is open
+            if self._check_port_open(target, kwargs.get("port", 3389)):
+                results["findings"].append({
+                    'type': 'rdp_service_detected',
+                    'title': 'RDP Service Detected',
+                    'severity': 'info',
+                    'description': f'RDP service is running on port {kwargs.get("port", 3389)}',
+                    'recommendation': 'Install NetExec (pipx install netexec) for comprehensive RDP security testing'
+                })
+            else:
+                results["success"] = False
+                results["error"] = "RDP port not accessible"
+            return results
         
         # Check if RDP port is open
         if not self._check_port_open(target, kwargs.get("port", 3389)):
@@ -166,8 +192,53 @@ class RDPPlugin(Plugin):
             if kwargs.get("screenshot") and auth_results.get("success"):
                 results["screenshot"] = self._take_screenshot(target, kwargs)
         
-        # Analyze results
-        results["findings"] = self._analyze_results(results)
+        # Analyze results and convert to findings list
+        analysis = self._analyze_results(results)
+        
+        # Convert analysis dict to findings list format
+        findings_list = []
+        
+        # Critical vulnerabilities
+        if "critical_vulnerabilities" in analysis:
+            for vuln_name in analysis["critical_vulnerabilities"]["vulns"]:
+                findings_list.append({
+                    'type': 'rdp_critical_vulnerability',
+                    'title': vuln_name,
+                    'severity': 'critical',
+                    'description': analysis["critical_vulnerabilities"]["description"]
+                })
+        
+        # Weak configuration
+        if "weak_configuration" in analysis:
+            findings_list.append({
+                'type': 'rdp_weak_configuration',
+                'title': 'Weak RDP Configuration',
+                'severity': 'medium',
+                'description': analysis["weak_configuration"]["description"],
+                'details': {'issues': analysis["weak_configuration"]["issues"]}
+            })
+        
+        # Admin access
+        if "admin_access" in analysis:
+            findings_list.append({
+                'type': 'rdp_admin_access',
+                'title': 'Administrative Access Obtained',
+                'severity': 'high',
+                'description': analysis["admin_access"]["description"],
+                'impact': analysis["admin_access"]["impact"]
+            })
+        
+        # Information disclosure
+        if "information_disclosure" in analysis:
+            findings_list.append({
+                'type': 'rdp_information_disclosure',
+                'title': 'Desktop Screenshot Captured',
+                'severity': 'low',
+                'description': analysis["information_disclosure"]["description"],
+                'path': analysis["information_disclosure"]["path"]
+            })
+        
+        results["findings"] = findings_list
         
         return results
     
