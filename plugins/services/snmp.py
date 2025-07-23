@@ -299,6 +299,13 @@ class SNMPPlugin(Plugin):
             community_list = kwargs.get("community_list", str(self.local_community_list))
             timeout = kwargs.get("timeout", 300)
             output_dir = Path(kwargs.get("output_dir", "output/snmp"))
+            
+            # Ensure community list exists and is readable
+            if not Path(community_list).exists():
+                logger.error(f"Community list file not found: {community_list}")
+                results["success"] = False
+                results["errors"].append(f"Community list file not found: {community_list}")
+                return results
             output_dir.mkdir(parents=True, exist_ok=True)
             
             logger.info(f"Starting SNMP enumeration on {target}:{port}")
@@ -307,15 +314,24 @@ class SNMPPlugin(Plugin):
             output_file = output_dir / f"snmp_{target}_{port}.txt"
             
             # Build OneSixtyOne command
-            cmd = [
-                tool_path,
-                "-c", community_list,  # Community string file
-                "-o", str(output_file),     # Output file
-                target
-            ]
+            # Basic format: onesixtyone [options] <host>
+            cmd = [tool_path]
+            
+            # Add community file
+            cmd.extend(["-c", community_list])
+            
+            # Add output file (onesixtyone outputs to both stdout and file)
+            cmd.extend(["-o", str(output_file)])
+            
+            # Add port if non-default
+            if port != 161:
+                cmd.extend(["-p", str(port)])
+            
+            # Add target (must be last)
+            cmd.append(target)
             
             # Run OneSixtyOne
-            logger.debug(f"Running command: {' '.join(cmd)}")
+            logger.info(f"Running onesixtyone command: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -323,19 +339,44 @@ class SNMPPlugin(Plugin):
                 timeout=timeout
             )
             
-            # Parse results
-            findings = self._parse_results(output_file, result.stdout)
+            # Log return code
+            logger.debug(f"onesixtyone returned code: {result.returncode}")
+            
+            # Check for errors in stderr
+            if result.stderr:
+                logger.warning(f"onesixtyone stderr: {result.stderr}")
+                if "error" in result.stderr.lower():
+                    results["errors"].append(result.stderr)
+            
+            # Parse results from stdout (primary source)
+            logger.debug(f"onesixtyone stdout length: {len(result.stdout)}")
+            logger.debug(f"First 200 chars of stdout: {result.stdout[:200] if result.stdout else 'No output'}")
+            
+            findings = self._parse_results(result.stdout, output_file)
+            logger.info(f"Found {len(findings)} SNMP findings")
             results["findings"].extend(findings)
             
             # Save raw output
             if result.stdout:
                 raw_output = output_dir / f"snmp_{target}_{port}_raw.txt"
                 with open(raw_output, 'w') as f:
+                    f.write("=== COMMAND ===\n")
+                    f.write(' '.join(cmd) + "\n\n")
+                    f.write("=== STDOUT ===\n")
                     f.write(result.stdout)
+                    if result.stderr:
+                        f.write("\n\n=== STDERR ===\n")
+                        f.write(result.stderr)
                 results["raw_output"] = str(raw_output)
             
             results["output_file"] = str(output_file)
             results["command"] = ' '.join(cmd)
+            
+            # Log summary
+            if findings:
+                logger.info(f"Found {len(findings)} SNMP communities on {target}:{port}")
+            else:
+                logger.info(f"No SNMP communities found on {target}:{port}")
             
         except subprocess.TimeoutExpired:
             logger.error(f"SNMP scan timed out for {target}:{port}")
@@ -348,60 +389,91 @@ class SNMPPlugin(Plugin):
         
         return results
     
-    def _parse_results(self, output_file: Path, stdout: str) -> List[Dict[str, Any]]:
-        """Parse OneSixtyOne results."""
+    def _parse_results(self, stdout: str, output_file: Path) -> List[Dict[str, Any]]:
+        """Parse OneSixtyOne results.
+        
+        OneSixtyOne output format:
+        IP [community] system description
+        
+        Example:
+        192.168.1.1 [public] Linux router 2.6.18
+        """
         findings = []
         
-        # Parse stdout for successful community strings
+        # Parse stdout (primary source)
         if stdout:
             for line in stdout.splitlines():
                 line = line.strip()
                 if not line:
                     continue
+                
+                # Skip error messages
+                if line.startswith("Scanning") or line.startswith("Trying"):
+                    continue
                     
                 # OneSixtyOne format: IP [community] system description
                 if '[' in line and ']' in line:
-                    parts = line.split('[', 1)
-                    if len(parts) == 2:
-                        ip = parts[0].strip()
-                        rest = parts[1]
-                        if ']' in rest:
-                            community = rest.split(']')[0]
-                            description = rest.split(']', 1)[1].strip()
+                    try:
+                        # Split by first '[' to get IP
+                        parts = line.split('[', 1)
+                        if len(parts) == 2:
+                            ip = parts[0].strip()
+                            rest = parts[1]
                             
-                            # Determine if it's a default/common community string
-                            common_communities = ['public', 'private', 'community', 'default', 'admin']
-                            finding_type = 'snmp_community'
-                            if community.lower() in common_communities:
-                                finding_type = 'snmp_default_community'
-                            
-                            findings.append({
-                                'type': finding_type,
-                                'severity': 'high',
-                                'title': 'Common Community String In Use',
-                                'description': f'SNMP community string "{community}" is accessible',
-                                'details': {
-                                    'ip': ip,
-                                    'community': community,
-                                    'system_description': description
+                            # Extract community string and description
+                            if ']' in rest:
+                                community = rest.split(']')[0]
+                                description = rest.split(']', 1)[1].strip() if len(rest.split(']', 1)) > 1 else ""
+                                
+                                # Determine severity based on community string
+                                common_communities = ['public', 'private', 'community', 'default', 'admin']
+                                is_default = community.lower() in common_communities
+                                
+                                finding = {
+                                    'type': 'snmp_default_community' if is_default else 'snmp_community',
+                                    'severity': 'high' if is_default else 'medium',
+                                    'title': f'SNMP Community String Found: {community}',
+                                    'description': f'SNMP service is accessible using community string "{community}"',
+                                    'details': {
+                                        'ip': ip,
+                                        'community': community,
+                                        'system_description': description,
+                                        'is_default': is_default
+                                    }
                                 }
-                            })
+                                
+                                # Add recommendation
+                                if is_default:
+                                    finding['recommendation'] = (
+                                        f"The default SNMP community string '{community}' is in use. "
+                                        "Change to a strong, unique community string and restrict "
+                                        "SNMP access to authorized management stations only."
+                                    )
+                                else:
+                                    finding['recommendation'] = (
+                                        "Ensure SNMP access is restricted to authorized management "
+                                        "stations only. Consider using SNMPv3 with authentication."
+                                    )
+                                
+                                findings.append(finding)
+                                logger.debug(f"Found SNMP community '{community}' on {ip}")
+                                
+                    except Exception as e:
+                        logger.warning(f"Failed to parse line: {line} - {e}")
         
-        # Also check output file if it exists
-        if output_file.exists():
+        # Also check the output file as a fallback
+        if output_file.exists() and not findings:
             try:
                 with open(output_file, 'r') as f:
-                    content = f.read()
-                    # Parse file content if different from stdout
-                    if content and content != stdout:
-                        # Additional parsing logic if needed
-                        pass
+                    file_content = f.read()
+                    if file_content and file_content != stdout:
+                        # Parse file content using same logic
+                        logger.debug("Parsing output file as fallback")
+                        # Note: Usually stdout and file content are the same
             except Exception as e:
-                logging.error(f"Failed to read output file: {e}")
+                logger.error(f"Failed to read output file: {e}")
         
         return findings
-    
-
     
     def can_handle(self, service: str, port: int) -> bool:
         """Check if this plugin can handle the given service/port.
