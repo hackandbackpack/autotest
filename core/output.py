@@ -603,7 +603,11 @@ class OutputManager:
             'smb_null_session': 'SMB Null Session',
             'smb_dangerous_shares': 'Administrative Shares Accessible',
             'ms17_010': 'MS17-010 (EternalBlue)',
-            'smb_guest_access': 'SMB Guest Access Enabled'
+            'smb_guest_access': 'SMB Guest Access Enabled',
+            # SNMP findings
+            'snmp_community': 'Common Community String In Use',
+            'snmp_default_community': 'Default SNMP Community String',
+            'snmp_weak_community': 'Weak SNMP Community String'
         }
         
         for finding in findings:
@@ -628,8 +632,14 @@ class OutputManager:
             # Add additional context for certain finding types
             additional_info = ""
             
+            # For SNMP community strings, use the community string as additional info
+            if finding_type == 'snmp_community' and isinstance(details, dict):
+                community = details.get('community', '')
+                if community:
+                    additional_info = community
+            
             # For weak protocols, show which protocols
-            if finding_type == 'weak_protocol' and isinstance(details, dict):
+            elif finding_type == 'weak_protocol' and isinstance(details, dict):
                 protocol = details.get('protocol', '')
                 if protocol:
                     # Convert tls_1_0 to TLSv1.0 format
@@ -707,16 +717,25 @@ class OutputManager:
                     for host in sorted(hosts_by_info['']):
                         report_lines.append(host)
                 else:
-                    # Group by additional info
-                    for info, host_list in sorted(hosts_by_info.items()):
-                        if info:
-                            # Show hosts with their additional info
-                            for host in sorted(host_list):
-                                report_lines.append(f"{host} {info}")
-                        else:
-                            # Just the host
-                            for host in sorted(host_list):
-                                report_lines.append(host)
+                    # Special handling for SNMP community strings
+                    if finding_title == "Common Community String In Use":
+                        # Show community string first, then hosts
+                        for info, host_list in sorted(hosts_by_info.items()):
+                            if info:  # info contains the community string
+                                report_lines.append(info)
+                                for host in sorted(host_list):
+                                    report_lines.append(host)
+                    else:
+                        # Default: Group by additional info
+                        for info, host_list in sorted(hosts_by_info.items()):
+                            if info:
+                                # Show hosts with their additional info
+                                for host in sorted(host_list):
+                                    report_lines.append(f"{host} {info}")
+                            else:
+                                # Just the host
+                                for host in sorted(host_list):
+                                    report_lines.append(host)
                 
                 report_lines.append("")  # Empty line between finding types
         

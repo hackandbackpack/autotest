@@ -198,11 +198,17 @@ class SNMPPlugin(Plugin):
                             community = rest.split(']')[0]
                             description = rest.split(']', 1)[1].strip()
                             
+                            # Determine if it's a default/common community string
+                            common_communities = ['public', 'private', 'community', 'default', 'admin']
+                            finding_type = 'snmp_community'
+                            if community.lower() in common_communities:
+                                finding_type = 'snmp_default_community'
+                            
                             findings.append({
-                                'type': 'snmp_community',
+                                'type': finding_type,
                                 'severity': 'high',
-                                'title': f'SNMP Community String Found: {community}',
-                                'description': f'Valid SNMP community string "{community}" found on {ip}',
+                                'title': 'Common Community String In Use',
+                                'description': f'SNMP community string "{community}" is accessible',
                                 'details': {
                                     'ip': ip,
                                     'community': community,
