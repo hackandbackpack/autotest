@@ -5,8 +5,16 @@ SNMP service plugin for AutoTest using OneSixtyOne.
 import logging
 import shutil
 import subprocess
+import os
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+
+# Try to import requests
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
 
 from ..base import Plugin, PluginType, plugin
 
@@ -31,8 +39,169 @@ class SNMPPlugin(Plugin):
         self.tool_name = "onesixtyone"
         self.required_tools = ["onesixtyone"]
         
-        # Default wordlist
-        self.default_community_list = '/usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt'
+        # Default wordlist paths
+        self.plugin_dir = Path(__file__).parent
+        self.wordlists_dir = self.plugin_dir / "wordlists"
+        self.local_community_list = self.wordlists_dir / "snmp-community-strings.txt"
+        self.seclists_path = '/usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt'
+        
+        # Ensure wordlists directory exists
+        self.wordlists_dir.mkdir(exist_ok=True)
+        
+        # Download wordlist if needed
+        self._ensure_wordlist()
+    
+    def _ensure_wordlist(self) -> None:
+        """Ensure SNMP community strings wordlist exists."""
+        # First check if local wordlist already exists
+        if self.local_community_list.exists():
+            logger.debug(f"Using existing SNMP wordlist: {self.local_community_list}")
+            return
+        
+        # Check if SecLists is installed
+        if Path(self.seclists_path).exists():
+            logger.info(f"Copying SNMP wordlist from SecLists")
+            try:
+                shutil.copy(self.seclists_path, self.local_community_list)
+                logger.info(f"SNMP wordlist copied to: {self.local_community_list}")
+                return
+            except Exception as e:
+                logger.warning(f"Failed to copy from SecLists: {e}")
+        
+        # Download a default wordlist if requests is available
+        if REQUESTS_AVAILABLE:
+            logger.info("Downloading default SNMP community strings wordlist")
+            try:
+                # Use a reliable source for SNMP community strings
+                url = "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/SNMP/common-snmp-community-strings.txt"
+                
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                
+                # Save the wordlist
+                with open(self.local_community_list, 'w') as f:
+                    f.write(response.text)
+                
+                logger.info(f"Downloaded SNMP wordlist to: {self.local_community_list}")
+                return
+                
+            except Exception as e:
+                logger.warning(f"Failed to download SNMP wordlist: {e}")
+        else:
+            logger.warning("requests module not available for downloading wordlist")
+        
+        # Create a minimal default list
+        logger.info("Creating minimal default SNMP community strings list")
+        default_communities = [
+                "public",
+                "private", 
+                "community",
+                "default",
+                "admin",
+                "snmp",
+                "snmpd",
+                "cisco",
+                "cable-d",
+                "internal",
+                "private@es0",
+                "public@es0",
+                "secret",
+                "security",
+                "staff",
+                "support",
+                "test",
+                "guest",
+                "read",
+                "write",
+                "all",
+                "monitor",
+                "manager",
+                "operator",
+                "mrtg",
+                "root",
+                "system",
+                "admin@es0",
+                "snmp-trap",
+                "CISCO",
+                "PUBLIC",
+                "PRIVATE",
+                "COMMUNITY",
+                "0",
+                "1234",
+                "2read",
+                "4changes",
+                "access",
+                "adm",
+                "all private",
+                "all public",
+                "apc",
+                "bintec",
+                "blue",
+                "c",
+                "cc",
+                "enable",
+                "field",
+                "field-service",
+                "freekevin",
+                "fubar",
+                "guest",
+                "hello",
+                "hp_admin",
+                "ibm",
+                "ilmi",
+                "intermec",
+                "internet",
+                "iso",
+                "isolan",
+                "local",
+                "logon",
+                "netman",
+                "network",
+                "none",
+                "openview",
+                "pass",
+                "password",
+                "pr1v4t3",
+                "proxy",
+                "publ1c",
+                "read-only",
+                "read-write",
+                "readwrite",
+                "red",
+                "regional",
+                "rmon",
+                "rmon_admin",
+                "ro",
+                "router",
+                "rw",
+                "rwa",
+                "san-fran",
+                "sanfran",
+                "scotty",
+                "secret",
+                "security",
+                "seri",
+                "snmp",
+                "snmpd",
+                "snmptrap",
+                "sun",
+                "superuser",
+                "switch",
+                "system",
+                "tech",
+                "test",
+                "test2",
+                "tiv0li",
+                "tivoli",
+                "trap",
+                "world",
+                "yellow"
+            ]
+            
+            with open(self.local_community_list, 'w') as f:
+                f.write('\n'.join(default_communities))
+            
+            logger.info(f"Created default SNMP wordlist with {len(default_communities)} entries")
     
     def _find_tool(self) -> Optional[str]:
         """Find onesixtyone executable.
@@ -62,7 +231,7 @@ class SNMPPlugin(Plugin):
         """
         return {
             "port": 161,
-            "community_list": self.default_community_list,
+            "community_list": str(self.local_community_list),
             "timeout": 300,
             "output_dir": "output/snmp"
         }
@@ -87,9 +256,11 @@ class SNMPPlugin(Plugin):
             return False
         
         # Check if community list file exists
-        community_list = kwargs.get("community_list", self.default_community_list)
+        community_list = kwargs.get("community_list", str(self.local_community_list))
         if not Path(community_list).exists():
             logger.warning(f"Community list file not found: {community_list}")
+            # Try to ensure wordlist again
+            self._ensure_wordlist()
         
         return True
     
@@ -125,7 +296,7 @@ class SNMPPlugin(Plugin):
         
         try:
             port = kwargs.get("port", 161)
-            community_list = kwargs.get("community_list", self.default_community_list)
+            community_list = kwargs.get("community_list", str(self.local_community_list))
             timeout = kwargs.get("timeout", 300)
             output_dir = Path(kwargs.get("output_dir", "output/snmp"))
             output_dir.mkdir(parents=True, exist_ok=True)

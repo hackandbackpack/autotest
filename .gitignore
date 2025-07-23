@@ -143,6 +143,9 @@ logs/
 tmp/
 .autotest/
 
+# Plugin wordlists (downloaded at runtime)
+plugins/services/wordlists/
+
 # Security - never commit these
 *.key
 *.pem
