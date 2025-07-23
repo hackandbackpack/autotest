@@ -3,7 +3,7 @@
 import subprocess
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 import re
 
@@ -23,6 +23,7 @@ class SMBPlugin(Plugin):
         self.version = "1.0.0"
         self.description = "Test SMB services for vulnerabilities using NetExec"
         self.type = PluginType.SERVICE
+        self.required_tools = ["netexec"]
         self.netexec_path = self._find_netexec()
         
     def _find_netexec(self) -> str:
@@ -43,6 +44,30 @@ class SMBPlugin(Plugin):
         
         logger.warning("NetExec not found in PATH")
         return "netexec"  # Default fallback
+    
+    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+        """Check if NetExec is available using custom logic."""
+        if skip_check or getattr(self, 'skip_tool_check', False):
+            return True, {}
+        
+        # Try to find NetExec
+        actual_path = self._find_netexec()
+        
+        # Check if the found path actually works
+        try:
+            result = subprocess.run([actual_path, "--version"], 
+                                 capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return True, {"netexec": {"available": True, "path": actual_path}}
+        except:
+            pass
+        
+        # NetExec not found
+        return False, {"netexec": {
+            "available": False, 
+            "install_command": "pipx install netexec",
+            "path": None
+        }}
     
     def get_required_params(self) -> List[str]:
         """Get required parameters for SMB plugin.

@@ -6,7 +6,7 @@ import logging
 import subprocess
 import json
 import shutil
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
 from ..base import Plugin, PluginType, plugin
@@ -40,8 +40,23 @@ class SSHPlugin(Plugin):
         """
         if shutil.which(self.tool_name):
             return self.tool_name
-        logger.warning("ssh-audit not found in PATH")
+        # Don't log warning here as check_required_tools will handle it
         return None
+    
+    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+        """Check if ssh-audit is available using custom logic."""
+        if skip_check or getattr(self, 'skip_tool_check', False):
+            return True, {}
+        
+        tool_path = self._find_tool()
+        if tool_path:
+            return True, {self.tool_name: {"available": True, "path": tool_path}}
+        else:
+            return False, {self.tool_name: {
+                "available": False, 
+                "install_command": "pipx install ssh-audit",
+                "path": None
+            }}
     
     def get_required_params(self) -> List[str]:
         """Get required parameters for SSH plugin.

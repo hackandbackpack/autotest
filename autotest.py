@@ -162,7 +162,7 @@ class AutoTest:
         
         # Create output directory
         timestamp = get_timestamp()
-        output_dir_name = f"autotest_scan_{timestamp}"
+        output_dir_name = f"scan_{timestamp}"
         output_base = self.config.get('general.output_dir', 'output')
         output_dir = Path(output_base) / output_dir_name
         create_directory(str(output_dir))
@@ -207,7 +207,7 @@ class AutoTest:
             # Create tasks from discovery results with plugin executor
             # Pass the AutoTest instance so tasks can access execute_plugin_task
             self.task_manager.autotest_instance = self
-            self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins)
+            self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins, ports)
             
             # Setup TUI if not disabled and available
             if not no_tui and TUI_AVAILABLE:
@@ -599,6 +599,10 @@ def main(
         processed_targets = unique_targets
         
         console.print(f"[green]Starting scan of {len(processed_targets)} targets[/green]")
+        
+        # Display port filter information prominently
+        if ports:
+            console.print(f"[yellow]Port filter active: Only scanning port(s) {ports}[/yellow]")
         
         # Run the scan (TUI is disabled by default unless --tui flag is used)
         app.run_scan(processed_targets, ports, no_tui=not tui)

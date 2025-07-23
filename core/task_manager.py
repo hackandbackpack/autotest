@@ -7,7 +7,7 @@ import queue
 import time
 import concurrent.futures
 import logging
-from typing import List, Dict, Any, Callable, Optional, Tuple
+from typing import List, Dict, Any, Callable, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from enum import Enum
 from .exceptions import TaskError
@@ -504,21 +504,33 @@ class TaskManager:
         
         return stack
     
-    def create_tasks_from_discovery(self, discovered_hosts: Dict[str, Any], plugins: List[Any]) -> None:
+    def create_tasks_from_discovery(self, discovered_hosts: Dict[str, Any], plugins: List[Any], 
+                                   port_filter: Optional[str] = None) -> None:
         """
         Create tasks based on discovery results and available plugins.
         
         Args:
             discovered_hosts: Dictionary of discovered hosts with their open ports
             plugins: List of available plugins
-            executor_callback: Optional callback to execute plugin tasks
+            port_filter: Optional port specification to limit plugin execution
         """
         import uuid
+        
+        # Parse port filter if provided
+        allowed_ports = None
+        if port_filter:
+            allowed_ports = self._parse_port_filter(port_filter)
+            logging.info(f"Limiting plugin execution to ports: {sorted(allowed_ports)}")
         
         # Create tasks for each host/port/service combination
         for host, host_info in discovered_hosts.items():
             if isinstance(host_info, dict) and 'ports' in host_info:
                 for port in host_info['ports']:
+                    # Skip ports not in the filter if specified
+                    if allowed_ports and port not in allowed_ports:
+                        logging.debug(f"Skipping port {port} - not in allowed ports filter")
+                        continue
+                    
                     service = host_info.get('services', {}).get(str(port), 'unknown')
                     logging.debug(f"Host {host}, Port {port}, Service: {service}")
                     
@@ -620,3 +632,46 @@ class TaskManager:
             except Exception as e:
                 logging.debug(f"Resource monitoring error: {e}")
                 time.sleep(10)
+    
+    def _parse_port_filter(self, port_spec: str) -> Set[int]:
+        """Parse port specification into a set of port numbers.
+        
+        Args:
+            port_spec: Port specification (e.g., "22,80,443" or "1-1000")
+        
+        Returns:
+            Set of allowed port numbers
+        """
+        from typing import Set
+        ports = set()
+        
+        # Parse comma-separated ports and ranges
+        for part in port_spec.split(','):
+            part = part.strip()
+            if '-' in part:
+                # Handle range
+                try:
+                    start, end = part.split('-', 1)
+                    start_port = int(start.strip())
+                    end_port = int(end.strip())
+                    
+                    # Validate range
+                    if start_port < 1 or end_port > 65535 or start_port > end_port:
+                        logging.warning(f"Invalid port range: {part}")
+                        continue
+                    
+                    ports.update(range(start_port, end_port + 1))
+                except ValueError:
+                    logging.warning(f"Invalid port range format: {part}")
+            else:
+                # Single port
+                try:
+                    port = int(part)
+                    if 1 <= port <= 65535:
+                        ports.add(port)
+                    else:
+                        logging.warning(f"Invalid port number: {port}")
+                except ValueError:
+                    logging.warning(f"Invalid port format: {part}")
+        
+        return ports

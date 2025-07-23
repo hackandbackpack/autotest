@@ -97,6 +97,18 @@ class Discovery:
         logging.info(f"Starting host discovery on {total} targets...")
         logging.info(f"Using {self.max_threads} concurrent threads")
         
+        # Log port filter information
+        if ports:
+            # Format the port list for display
+            if len(port_list) <= 10:
+                port_display = ', '.join(map(str, port_list))
+            else:
+                # Show first 10 ports and indicate there are more
+                port_display = ', '.join(map(str, port_list[:10])) + f'... ({len(port_list)} total)'
+            logging.info(f"Port filter active: Only scanning port(s) [{port_display}]")
+        else:
+            logging.info(f"Using default ports: {', '.join(map(str, port_list))}")
+        
         # Progress tracking
         last_progress_update = time.time()
         progress_interval = 10  # Update every 10 seconds
