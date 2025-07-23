@@ -202,8 +202,52 @@ class SMBPlugin(Plugin):
                 base_cmd, kwargs
             )
         
-        # Analyze results for security issues
-        results["findings"].update(self._analyze_results(results))
+        # Analyze results for security findings
+        security_findings = self._analyze_results(results)
+        
+        # Convert to proper findings format
+        findings_list = []
+        
+        # SMB signing not enforced
+        if "weak_signing" in security_findings:
+            findings_list.append({
+                'type': 'smb_signing_not_enforced',
+                'title': 'SMB Signing Not Enforced',
+                'severity': 'medium',
+                'description': security_findings['weak_signing']['description']
+            })
+        
+        # SMBv1 enabled
+        if "smbv1_enabled" in security_findings:
+            findings_list.append({
+                'type': 'smb_v1_enabled',
+                'title': 'SMB Version 1 Enabled',
+                'severity': 'high',
+                'description': security_findings['smbv1_enabled']['description']
+            })
+        
+        # Dangerous shares accessible
+        if "dangerous_shares" in security_findings:
+            findings_list.append({
+                'type': 'smb_dangerous_shares',
+                'title': 'Administrative Shares Accessible',
+                'severity': 'high',
+                'description': security_findings['dangerous_shares']['description'],
+                'details': {'shares': security_findings['dangerous_shares']['shares']}
+            })
+        
+        # Add vulnerabilities to findings
+        for vuln in results.get("vulnerabilities", []):
+            if "MS17-010" in vuln.get("name", ""):
+                findings_list.append({
+                    'type': 'ms17_010',
+                    'title': vuln['name'],
+                    'severity': 'critical',
+                    'description': vuln['description'],
+                    'recommendation': vuln.get('remediation', '')
+                })
+        
+        results["findings"] = findings_list
         
         return results
     
@@ -250,7 +294,8 @@ class SMBPlugin(Plugin):
             "hostname": None,
             "domain": None,
             "os": None,
-            "smb_signing": None
+            "smb_signing": None,
+            "smb_version": None
         }
         
         if "SMB" in output and "STATUS_" not in output:
@@ -275,6 +320,10 @@ class SMBPlugin(Plugin):
                 info["smb_signing"] = "required"
             elif "signing:False" in output:
                 info["smb_signing"] = "not required"
+                
+            # Check SMB version (NetExec might show SMBv1 in output)
+            if "SMBv1" in output or "SMB1" in output:
+                info["smb_version"] = "SMBv1"
         
         return info
     
@@ -427,10 +476,20 @@ class SMBPlugin(Plugin):
             }
         
         # Check for weak configurations
-        if results.get("findings", {}).get("connectivity", {}).get("smb_signing") == "not required":
+        connectivity = results.get("connectivity", {})
+        
+        # SMB signing not enforced
+        if connectivity.get("smb_signing") == "not required":
             findings["weak_signing"] = {
                 "severity": "MEDIUM",
                 "description": "SMB signing not enforced"
+            }
+            
+        # SMBv1 enabled
+        if connectivity.get("smb_version") == "SMBv1":
+            findings["smbv1_enabled"] = {
+                "severity": "HIGH",
+                "description": "SMB Version 1 is enabled"
             }
         
         # Check for information disclosure

@@ -596,7 +596,14 @@ class OutputManager:
             'heartbleed': 'Heartbleed',
             'compression': 'TLS Compression',
             'ssl_vulnerability': 'SSL Vulnerability',
-            'ssl_weakness': 'SSL Weakness'
+            'ssl_weakness': 'SSL Weakness',
+            # SMB findings
+            'smb_v1_enabled': 'SMB Version 1 Enabled',
+            'smb_signing_not_enforced': 'SMB Signing Not Enforced',
+            'smb_null_session': 'SMB Null Session',
+            'smb_dangerous_shares': 'Administrative Shares Accessible',
+            'ms17_010': 'MS17-010 (EternalBlue)',
+            'smb_guest_access': 'SMB Guest Access Enabled'
         }
         
         for finding in findings:
