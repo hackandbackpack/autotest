@@ -1,4 +1,4 @@
-"""SMB service plugin using NetExec for AutoTest framework."""
+"""SMB service plugin using netexec for AutoTest framework."""
 
 import subprocess
 import json
@@ -14,20 +14,20 @@ logger = logging.getLogger(__name__)
 
 @plugin(name="smb")
 class SMBPlugin(Plugin):
-    """Plugin for testing SMB services using NetExec."""
+    """Plugin for testing SMB services using netexec."""
     
     def __init__(self):
         """Initialize SMB plugin."""
         super().__init__()
         self.name = "SMB Service Plugin"
         self.version = "1.0.0"
-        self.description = "Test SMB services for vulnerabilities using NetExec"
+        self.description = "Test SMB services for vulnerabilities using netexec"
         self.type = PluginType.SERVICE
         self.required_tools = ["netexec"]
         self.netexec_path = self._find_netexec()
         
     def _find_netexec(self) -> str:
-        """Find NetExec executable path.
+        """Find netexec executable path.
         
         Returns:
             Path to netexec executable
@@ -42,15 +42,15 @@ class SMBPlugin(Plugin):
             except FileNotFoundError:
                 continue
         
-        logger.warning("NetExec not found in PATH")
+        logger.warning("netexec not found in PATH")
         return "netexec"  # Default fallback
     
     def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
-        """Check if NetExec is available using custom logic."""
+        """Check if netexec is available using custom logic."""
         if skip_check or getattr(self, 'skip_tool_check', False):
             return True, {}
         
-        # Try to find NetExec
+        # Try to find netexec
         actual_path = self._find_netexec()
         
         # Check if the found path actually works
@@ -62,7 +62,7 @@ class SMBPlugin(Plugin):
         except:
             pass
         
-        # NetExec not found
+        # netexec not found
         return False, {"netexec": {
             "available": False, 
             "install_command": "pipx install netexec",
@@ -131,7 +131,7 @@ class SMBPlugin(Plugin):
         return True
     
     def execute(self, target: str, **kwargs) -> Dict[str, Any]:
-        """Execute SMB testing using NetExec.
+        """Execute SMB testing using netexec.
         
         Args:
             target: Target host or network
@@ -309,7 +309,7 @@ class SMBPlugin(Plugin):
         """Parse connectivity test output.
         
         Args:
-            output: NetExec output
+            output: netexec output
             
         Returns:
             Connectivity information
@@ -346,7 +346,7 @@ class SMBPlugin(Plugin):
             elif "signing:False" in output:
                 info["smb_signing"] = "not required"
                 
-            # Check SMB version (NetExec might show SMBv1 in output)
+            # Check SMB version (netexec might show SMBv1 in output)
             if "SMBv1" in output or "SMB1" in output:
                 info["smb_version"] = "SMBv1"
         
@@ -356,14 +356,14 @@ class SMBPlugin(Plugin):
         """Parse share enumeration output.
         
         Args:
-            output: NetExec shares output
+            output: netexec shares output
             
         Returns:
             List of shares
         """
         shares = []
         
-        # Parse NetExec share output format
+        # Parse netexec share output format
         for line in output.splitlines():
             if "READ" in line or "WRITE" in line:
                 parts = line.split()
@@ -390,7 +390,7 @@ class SMBPlugin(Plugin):
         """Parse session enumeration output.
         
         Args:
-            output: NetExec sessions output
+            output: netexec sessions output
             
         Returns:
             List of active sessions
@@ -413,7 +413,7 @@ class SMBPlugin(Plugin):
         """Parse user enumeration output.
         
         Args:
-            output: NetExec users output
+            output: netexec users output
             
         Returns:
             List of users
@@ -421,7 +421,7 @@ class SMBPlugin(Plugin):
         users = []
         
         for line in output.splitlines():
-            # Parse user entries from NetExec output
+            # Parse user entries from netexec output
             user_match = re.search(r'([^\s\\]+\\[^\s]+)\s+(\w+:\w+)', line)
             if user_match:
                 users.append({
@@ -435,7 +435,7 @@ class SMBPlugin(Plugin):
         """Check for specific SMB vulnerabilities.
         
         Args:
-            base_cmd: Base NetExec command
+            base_cmd: Base netexec command
             kwargs: Plugin parameters
             
         Returns:

@@ -1,4 +1,4 @@
-"""RDP service plugin using NetExec for AutoTest framework."""
+"""RDP service plugin using netexec for AutoTest framework."""
 
 import subprocess
 import logging
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 @plugin(name="rdp")
 class RDPPlugin(Plugin):
-    """Plugin for testing RDP services using NetExec and other tools."""
+    """Plugin for testing RDP services using netexec and other tools."""
     
     def __init__(self):
         """Initialize RDP plugin."""
@@ -26,7 +26,7 @@ class RDPPlugin(Plugin):
         self.netexec_path = self._find_netexec()
         
     def _find_netexec(self) -> str:
-        """Find NetExec executable path.
+        """Find netexec executable path.
         
         Returns:
             Path to netexec executable
@@ -41,11 +41,11 @@ class RDPPlugin(Plugin):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
         
-        logger.warning("NetExec not found in PATH")
+        logger.warning("netexec not found in PATH")
         return "netexec"
     
     def _is_netexec_available(self) -> bool:
-        """Check if NetExec is actually available."""
+        """Check if netexec is actually available."""
         try:
             result = subprocess.run([self.netexec_path, "--version"], 
                                  capture_output=True, text=True, timeout=5)
@@ -54,11 +54,11 @@ class RDPPlugin(Plugin):
             return False
     
     def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
-        """Check if NetExec is available using custom logic."""
+        """Check if netexec is available using custom logic."""
         if skip_check or getattr(self, 'skip_tool_check', False):
             return True, {}
         
-        # Try to find NetExec
+        # Try to find netexec
         actual_path = self._find_netexec()
         
         # Check if the found path actually works
@@ -70,7 +70,7 @@ class RDPPlugin(Plugin):
         except:
             pass
         
-        # NetExec not found
+        # netexec not found
         return False, {"netexec": {
             "available": False, 
             "install_command": "pipx install netexec",
@@ -154,9 +154,9 @@ class RDPPlugin(Plugin):
             "findings": []
         }
         
-        # Check if NetExec is available
+        # Check if netexec is available
         if self.netexec_path == "netexec" and not self._is_netexec_available():
-            logger.warning("NetExec not available, performing limited RDP checks")
+            logger.warning("netexec not available, performing limited RDP checks")
             # Still check if port is open
             if self._check_port_open(target, kwargs.get("port", 3389)):
                 results["findings"].append({
@@ -164,7 +164,7 @@ class RDPPlugin(Plugin):
                     'title': 'RDP Service Detected',
                     'severity': 'info',
                     'description': f'RDP service is running on port {kwargs.get("port", 3389)}',
-                    'recommendation': 'Install NetExec (pipx install netexec) for comprehensive RDP security testing'
+                    'recommendation': 'Install netexec (pipx install netexec) for comprehensive RDP security testing'
                 })
             else:
                 results["success"] = False
@@ -279,7 +279,7 @@ class RDPPlugin(Plugin):
             "security_layer": None
         }
         
-        # Use NetExec to get basic RDP info
+        # Use netexec to get basic RDP info
         cmd = [self.netexec_path, "rdp", target]
         
         if kwargs.get("port", 3389) != 3389:
@@ -332,7 +332,7 @@ class RDPPlugin(Plugin):
         # Try to connect without NLA to see if it's enforced
         try:
             # This would use rdp-sec-check or similar tool if available
-            # For now, we'll use NetExec's capability
+            # For now, we'll use netexec's capability
             cmd = [self.netexec_path, "rdp", target, "--rdp-timeout", "5"]
             output = self._run_command(cmd, 10)
             
@@ -413,7 +413,7 @@ class RDPPlugin(Plugin):
             True if vulnerable
         """
         try:
-            # Use NetExec's bluekeep module if available
+            # Use netexec's bluekeep module if available
             cmd = [self.netexec_path, "rdp", target, "-M", "bluekeep"]
             output = self._run_command(cmd, kwargs.get("timeout", 30))
             
@@ -508,7 +508,7 @@ class RDPPlugin(Plugin):
             "path": None
         }
         
-        # NetExec RDP screenshot capability
+        # netexec RDP screenshot capability
         cmd = [self.netexec_path, "rdp", target]
         cmd.extend(["-u", kwargs["username"]])
         
