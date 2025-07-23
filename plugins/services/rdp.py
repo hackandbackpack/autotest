@@ -34,11 +34,37 @@ class RDPPlugin(Plugin):
         # Try common names (removed 'cme' as it conflicts with Config::Model::Edit)
         for cmd in ["netexec", "nxc"]:
             try:
-                result = subprocess.run([cmd, "--version"], 
+                # Run without arguments - netexec shows help/usage
+                result = subprocess.run([cmd], 
                                      capture_output=True, text=True, timeout=5)
-                if result.returncode == 0 and ("netexec" in result.stdout.lower() or "nxc" in result.stdout.lower()):
+                
+                # Check both stdout and stderr for netexec indicators
+                combined_output = (result.stdout + result.stderr).lower()
+                
+                # Look for netexec-specific strings from the help output
+                indicators = ["netexec", "nxc", "network execution tool", "smoothoperator", "neffisback"]
+                found_indicators = sum(1 for ind in indicators if ind in combined_output)
+                
+                if found_indicators >= 2:
+                    logger.info(f"Found netexec as '{cmd}'")
                     return cmd
-            except (FileNotFoundError, subprocess.TimeoutExpired):
+                    
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                # Timeout might mean it's waiting for input
+                # Try with -h flag as fallback
+                try:
+                    result = subprocess.run([cmd, "-h"], 
+                                         capture_output=True, text=True, timeout=5)
+                    combined_output = (result.stdout + result.stderr).lower()
+                    if "netexec" in combined_output or "nxc" in combined_output:
+                        logger.info(f"Found netexec as '{cmd}' (using -h flag)")
+                        return cmd
+                except:
+                    pass
+            except Exception as e:
+                logger.debug(f"Error checking '{cmd}': {e}")
                 continue
         
         logger.warning("netexec not found in PATH")
@@ -47,9 +73,27 @@ class RDPPlugin(Plugin):
     def _is_netexec_available(self) -> bool:
         """Check if netexec is actually available."""
         try:
-            result = subprocess.run([self.netexec_path, "--version"], 
+            # Run without arguments - netexec shows help/usage
+            result = subprocess.run([self.netexec_path], 
                                  capture_output=True, text=True, timeout=5)
-            return result.returncode == 0 and ("netexec" in result.stdout.lower() or "nxc" in result.stdout.lower())
+            
+            # Check both stdout and stderr for netexec indicators
+            combined_output = (result.stdout + result.stderr).lower()
+            
+            # Look for netexec-specific strings from the help output
+            indicators = ["netexec", "nxc", "network execution tool", "smoothoperator", "neffisback"]
+            found_indicators = sum(1 for ind in indicators if ind in combined_output)
+            
+            return found_indicators >= 2
+        except subprocess.TimeoutExpired:
+            # Timeout might mean it's waiting for input - try with -h
+            try:
+                result = subprocess.run([self.netexec_path, "-h"], 
+                                     capture_output=True, text=True, timeout=5)
+                combined_output = (result.stdout + result.stderr).lower()
+                return "netexec" in combined_output or "nxc" in combined_output
+            except:
+                return False
         except:
             return False
     
@@ -62,13 +106,8 @@ class RDPPlugin(Plugin):
         actual_path = self._find_netexec()
         
         # Check if the found path actually works
-        try:
-            result = subprocess.run([actual_path, "--version"], 
-                                 capture_output=True, text=True, timeout=5)
-            if result.returncode == 0 and ("netexec" in result.stdout.lower() or "nxc" in result.stdout.lower()):
-                return True, {"netexec": {"available": True, "path": actual_path}}
-        except:
-            pass
+        if self._is_netexec_available():
+            return True, {"netexec": {"available": True, "path": actual_path}}
         
         # netexec not found
         return False, {"netexec": {

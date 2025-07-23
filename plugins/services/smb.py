@@ -32,14 +32,40 @@ class SMBPlugin(Plugin):
         Returns:
             Path to netexec executable
         """
-        # Try common names
-        for cmd in ["netexec", "nxc", "crackmapexec", "cme"]:
+        # Try common names (removed 'cme' as it conflicts with Config::Model::Edit)
+        for cmd in ["netexec", "nxc"]:
             try:
-                result = subprocess.run([cmd, "--version"], 
-                                     capture_output=True, text=True)
-                if result.returncode == 0:
+                # Run without arguments - netexec shows help/usage
+                result = subprocess.run([cmd], 
+                                     capture_output=True, text=True, timeout=5)
+                
+                # Check both stdout and stderr for netexec indicators
+                combined_output = (result.stdout + result.stderr).lower()
+                
+                # Look for netexec-specific strings from the help output
+                indicators = ["netexec", "nxc", "network execution tool", "smoothoperator", "neffisback"]
+                found_indicators = sum(1 for ind in indicators if ind in combined_output)
+                
+                if found_indicators >= 2:
+                    logger.info(f"Found netexec as '{cmd}'")
                     return cmd
+                    
             except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                # Timeout might mean it's waiting for input
+                # Try with -h flag as fallback
+                try:
+                    result = subprocess.run([cmd, "-h"], 
+                                         capture_output=True, text=True, timeout=5)
+                    combined_output = (result.stdout + result.stderr).lower()
+                    if any(ind in combined_output for ind in ["netexec", "nxc", "crackmapexec"]):
+                        logger.info(f"Found netexec as '{cmd}' (using -h flag)")
+                        return cmd
+                except:
+                    pass
+            except Exception as e:
+                logger.debug(f"Error checking '{cmd}': {e}")
                 continue
         
         logger.warning("netexec not found in PATH")
@@ -55,9 +81,13 @@ class SMBPlugin(Plugin):
         
         # Check if the found path actually works
         try:
-            result = subprocess.run([actual_path, "--version"], 
+            # Run with no args to get help output
+            result = subprocess.run([actual_path], 
                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
+            
+            # Check for netexec in output (case insensitive)
+            combined_output = (result.stdout + result.stderr).lower()
+            if any(ind in combined_output for ind in ["netexec", "nxc", "crackmapexec"]):
                 return True, {"netexec": {"available": True, "path": actual_path}}
         except:
             pass
