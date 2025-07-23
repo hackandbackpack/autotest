@@ -2,7 +2,7 @@
 
 import subprocess
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import re
 import socket
 
@@ -22,6 +22,7 @@ class RDPPlugin(Plugin):
         self.version = "1.0.0"
         self.description = "Test RDP services for vulnerabilities and misconfigurations"
         self.type = PluginType.SERVICE
+        self.required_tools = ["netexec"]
         self.netexec_path = self._find_netexec()
         
     def _find_netexec(self) -> str:
@@ -30,17 +31,42 @@ class RDPPlugin(Plugin):
         Returns:
             Path to netexec executable
         """
-        for cmd in ["netexec", "nxc", "crackmapexec", "cme"]:
+        # Try common names (removed 'cme' as it conflicts with Config::Model::Edit)
+        for cmd in ["netexec", "nxc"]:
             try:
                 result = subprocess.run([cmd, "--version"], 
-                                     capture_output=True, text=True)
-                if result.returncode == 0:
+                                     capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and ("netexec" in result.stdout.lower() or "nxc" in result.stdout.lower()):
                     return cmd
-            except FileNotFoundError:
+            except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
         
         logger.warning("NetExec not found in PATH")
         return "netexec"
+    
+    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
+        """Check if NetExec is available using custom logic."""
+        if skip_check or getattr(self, 'skip_tool_check', False):
+            return True, {}
+        
+        # Try to find NetExec
+        actual_path = self._find_netexec()
+        
+        # Check if the found path actually works
+        try:
+            result = subprocess.run([actual_path, "--version"], 
+                                 capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and ("netexec" in result.stdout.lower() or "nxc" in result.stdout.lower()):
+                return True, {"netexec": {"available": True, "path": actual_path}}
+        except:
+            pass
+        
+        # NetExec not found
+        return False, {"netexec": {
+            "available": False, 
+            "install_command": "pipx install netexec",
+            "path": None
+        }}
     
     def get_required_params(self) -> List[str]:
         """Get required parameters for RDP plugin.
@@ -284,7 +310,8 @@ class RDPPlugin(Plugin):
             })
         
         # Check for weak encryption
-        enc_level = config.get("encryption_level", "").lower()
+        enc_level = config.get("encryption_level") or ""
+        enc_level = enc_level.lower()
         if enc_level in ["low", "client compatible", "none"]:
             vulns.append({
                 "name": "Weak RDP Encryption",
@@ -493,7 +520,8 @@ class RDPPlugin(Plugin):
         if config.get("nla_required") is False:
             weak_configs.append("NLA not enforced")
         
-        if config.get("encryption_level", "").lower() in ["low", "none"]:
+        enc_level = (config.get("encryption_level") or "").lower()
+        if enc_level in ["low", "none"]:
             weak_configs.append(f"Weak encryption: {config['encryption_level']}")
         
         if weak_configs:
