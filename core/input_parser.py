@@ -149,7 +149,7 @@ class InputParser:
         
         if 'output_format' in options:
             output_format = options['output_format']
-            valid_formats = ['json', 'xml', 'csv', 'txt']
+            valid_formats = ['json', 'txt']
             if output_format not in valid_formats:
                 raise ValidationError(f"Output format must be one of: {valid_formats}")
             validated['output_format'] = output_format

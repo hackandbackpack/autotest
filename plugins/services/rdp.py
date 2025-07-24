@@ -1,120 +1,28 @@
 """RDP service plugin using netexec for AutoTest framework."""
 
-import subprocess
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 import re
 import socket
 
-from ..base import Plugin, PluginType, plugin
+from ..base import PluginType, plugin
+from ..base_classes.netexec_base import NetExecPlugin
 
 logger = logging.getLogger(__name__)
 
 
 @plugin(name="rdp")
-class RDPPlugin(Plugin):
+class RDPPlugin(NetExecPlugin):
     """Plugin for testing RDP services using netexec and other tools."""
     
     def __init__(self):
         """Initialize RDP plugin."""
-        super().__init__()
+        super().__init__(protocol="rdp", default_port=3389)
         self.name = "RDP Service Plugin"
         self.version = "1.0.0"
         self.description = "Test RDP services for vulnerabilities and misconfigurations"
         self.type = PluginType.SERVICE
-        self.required_tools = ["netexec"]
-        self.netexec_path = self._find_netexec()
         
-    def _find_netexec(self) -> str:
-        """Find netexec executable path.
-        
-        Returns:
-            Path to netexec executable
-        """
-        # Try common names (removed 'cme' as it conflicts with Config::Model::Edit)
-        for cmd in ["netexec", "nxc"]:
-            try:
-                # Run without arguments - netexec shows help/usage
-                result = subprocess.run([cmd], 
-                                     capture_output=True, text=True, timeout=5)
-                
-                # Check both stdout and stderr for netexec indicators
-                combined_output = (result.stdout + result.stderr).lower()
-                
-                # Look for netexec-specific strings from the help output
-                indicators = ["netexec", "nxc", "network execution tool", "smoothoperator", "neffisback"]
-                found_indicators = sum(1 for ind in indicators if ind in combined_output)
-                
-                if found_indicators >= 2:
-                    logger.info(f"Found netexec as '{cmd}'")
-                    return cmd
-                    
-            except FileNotFoundError:
-                continue
-            except subprocess.TimeoutExpired:
-                # Timeout might mean it's waiting for input
-                # Try with -h flag as fallback
-                try:
-                    result = subprocess.run([cmd, "-h"], 
-                                         capture_output=True, text=True, timeout=5)
-                    combined_output = (result.stdout + result.stderr).lower()
-                    if "netexec" in combined_output or "nxc" in combined_output:
-                        logger.info(f"Found netexec as '{cmd}' (using -h flag)")
-                        return cmd
-                except:
-                    pass
-            except Exception as e:
-                logger.debug(f"Error checking '{cmd}': {e}")
-                continue
-        
-        logger.warning("netexec not found in PATH")
-        return "netexec"
-    
-    def _is_netexec_available(self) -> bool:
-        """Check if netexec is actually available."""
-        try:
-            # Run without arguments - netexec shows help/usage
-            result = subprocess.run([self.netexec_path], 
-                                 capture_output=True, text=True, timeout=5)
-            
-            # Check both stdout and stderr for netexec indicators
-            combined_output = (result.stdout + result.stderr).lower()
-            
-            # Look for netexec-specific strings from the help output
-            indicators = ["netexec", "nxc", "network execution tool", "smoothoperator", "neffisback"]
-            found_indicators = sum(1 for ind in indicators if ind in combined_output)
-            
-            return found_indicators >= 2
-        except subprocess.TimeoutExpired:
-            # Timeout might mean it's waiting for input - try with -h
-            try:
-                result = subprocess.run([self.netexec_path, "-h"], 
-                                     capture_output=True, text=True, timeout=5)
-                combined_output = (result.stdout + result.stderr).lower()
-                return "netexec" in combined_output or "nxc" in combined_output
-            except:
-                return False
-        except:
-            return False
-    
-    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
-        """Check if netexec is available using custom logic."""
-        if skip_check or getattr(self, 'skip_tool_check', False):
-            return True, {}
-        
-        # Try to find netexec
-        actual_path = self._find_netexec()
-        
-        # Check if the found path actually works
-        if self._is_netexec_available():
-            return True, {"netexec": {"available": True, "path": actual_path}}
-        
-        # netexec not found
-        return False, {"netexec": {
-            "available": False, 
-            "install_command": "pipx install netexec",
-            "path": None
-        }}
     
     def get_required_params(self) -> List[str]:
         """Get required parameters for RDP plugin.
@@ -194,7 +102,7 @@ class RDPPlugin(Plugin):
         }
         
         # Check if netexec is available
-        if self.netexec_path == "netexec" and not self._is_netexec_available():
+        if not self.netexec_executor.is_available():
             logger.warning("netexec not available, performing limited RDP checks")
             # Still check if port is open
             if self._check_port_open(target, kwargs.get("port", 3389)):
@@ -319,13 +227,15 @@ class RDPPlugin(Plugin):
         }
         
         # Use netexec to get basic RDP info
-        cmd = [self.netexec_path, "rdp", target]
-        
-        if kwargs.get("port", 3389) != 3389:
-            cmd.extend(["--port", str(kwargs["port"])])
+        cmd = self.build_base_command(target, port=kwargs.get("port", 3389))
         
         try:
-            output = self._run_command(cmd, kwargs.get("timeout", 30))
+            result = self.execute_netexec(
+                cmd, 
+                kwargs.get("timeout", 30),
+                self.output_manager
+            )
+            output = result.stdout + result.stderr
             
             # Parse NLA status
             if "NLA:" in output:
@@ -372,8 +282,9 @@ class RDPPlugin(Plugin):
         try:
             # This would use rdp-sec-check or similar tool if available
             # For now, we'll use netexec's capability
-            cmd = [self.netexec_path, "rdp", target, "--rdp-timeout", "5"]
-            output = self._run_command(cmd, 10)
+            cmd = self.build_base_command(target, additional_args=["--rdp-timeout", "5"])
+            result = self.execute_netexec(cmd, 10, self.output_manager)
+            output = result.stdout + result.stderr
             
             if "NLA_REQUIRED" in output or "CredSSP" in output:
                 nla_info["enabled"] = True
@@ -453,8 +364,9 @@ class RDPPlugin(Plugin):
         """
         try:
             # Use netexec's bluekeep module if available
-            cmd = [self.netexec_path, "rdp", target, "-M", "bluekeep"]
-            output = self._run_command(cmd, kwargs.get("timeout", 30))
+            cmd = self.build_base_command(target, additional_args=["-M", "bluekeep"])
+            result = self.execute_netexec(cmd, kwargs.get("timeout", 30), self.output_manager)
+            output = result.stdout + result.stderr
             
             return "VULNERABLE" in output.upper()
         except Exception as e:
@@ -491,38 +403,28 @@ class RDPPlugin(Plugin):
             "message": None
         }
         
-        cmd = [self.netexec_path, "rdp", target]
+        # Build command with authentication
+        cmd = self.build_base_command(target, **kwargs)
         
-        # Add credentials
-        cmd.extend(["-u", kwargs["username"]])
-        
+        # Determine auth method
         if kwargs.get("password"):
-            cmd.extend(["-p", kwargs["password"]])
             auth_results["method"] = "password"
         elif kwargs.get("hash"):
-            cmd.extend(["-H", kwargs["hash"]])
             auth_results["method"] = "hash"
         
-        if kwargs.get("domain"):
-            cmd.extend(["-d", kwargs["domain"]])
-        
-        if kwargs.get("local_auth"):
-            cmd.append("--local-auth")
-        
-        # Add port if not default
-        if kwargs.get("port", 3389) != 3389:
-            cmd.extend(["--port", str(kwargs["port"])])
-        
         try:
-            output = self._run_command(cmd, kwargs.get("timeout", 30))
+            result = self.execute_netexec(
+                cmd, 
+                kwargs.get("timeout", 30),
+                self.output_manager
+            )
+            output = result.stdout + result.stderr
             
-            if "Administrator" in output or "STATUS_SUCCESS" in output:
+            # Use parent class method to check authentication success
+            if self.check_authentication_success(output):
                 auth_results["success"] = True
                 auth_results["message"] = "Authentication successful"
-                
-                # Check if admin
-                if "Administrator" in output or "(Pwn3d!)" in output:
-                    auth_results["admin_access"] = True
+                auth_results["admin_access"] = True
             else:
                 auth_results["message"] = "Authentication failed"
                 
@@ -547,19 +449,22 @@ class RDPPlugin(Plugin):
             "path": None
         }
         
-        # netexec RDP screenshot capability
-        cmd = [self.netexec_path, "rdp", target]
-        cmd.extend(["-u", kwargs["username"]])
-        
-        if kwargs.get("password"):
-            cmd.extend(["-p", kwargs["password"]])
-        elif kwargs.get("hash"):
-            cmd.extend(["-H", kwargs["hash"]])
-        
-        cmd.append("--screenshot")
+        # Build command with screenshot option
+        cmd = self.build_base_command(
+            target,
+            username=kwargs.get("username"),
+            password=kwargs.get("password"),
+            hash=kwargs.get("hash"),
+            additional_args=["--screenshot"]
+        )
         
         try:
-            output = self._run_command(cmd, kwargs.get("timeout", 60))
+            result = self.execute_netexec(
+                cmd, 
+                kwargs.get("timeout", 60),
+                self.output_manager
+            )
+            output = result.stdout + result.stderr
             
             # Parse output for screenshot path
             path_match = re.search(r'Screenshot saved to:\s*(.+)', output)
@@ -572,34 +477,6 @@ class RDPPlugin(Plugin):
         
         return screenshot_info
     
-    def _run_command(self, cmd: List[str], timeout: int) -> str:
-        """Run a command with timeout.
-        
-        Args:
-            cmd: Command to run
-            timeout: Timeout in seconds
-            
-        Returns:
-            Command output
-        """
-        logger.debug(f"Running command: {' '.join(cmd)}")
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            
-            if result.returncode != 0 and result.stderr:
-                logger.warning(f"Command stderr: {result.stderr}")
-            
-            return result.stdout + result.stderr
-        except subprocess.TimeoutExpired:
-            raise Exception(f"Command timed out after {timeout} seconds")
-        except Exception as e:
-            raise Exception(f"Command execution failed: {e}")
     
     def _analyze_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze results for security findings.

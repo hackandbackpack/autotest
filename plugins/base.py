@@ -6,10 +6,12 @@ from typing import Dict, Type, Optional, Any, List, Tuple
 import logging
 import sys
 import os
+import subprocess
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath((__file__ if "__file__" in globals() else ".")))))
 from core.utils import ToolChecker
+from core.tool_executor import ToolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class Plugin(ABC):
         self.type = PluginType.SERVICE
         self.required_tools = []  # List of required external tools
         self.skip_tool_check = False  # Can be set to skip tool checks
+        self.output_manager = None  # Will be set by framework after instantiation
         
     @abstractmethod
     def execute(self, target: str, **kwargs) -> Dict[str, Any]:
@@ -124,6 +127,57 @@ class Plugin(ABC):
                 })
         
         return missing_tools
+    
+    def execute_tool(self, cmd: List[str], timeout: int = 300, 
+                    output_manager=None, service: str = None) -> subprocess.CompletedProcess:
+        """
+        Execute a tool command using ToolExecutor with standard logging.
+        
+        Args:
+            cmd: Command to execute as a list
+            timeout: Timeout in seconds
+            output_manager: OutputManager instance for logging
+            service: Service name for categorized logging
+            
+        Returns:
+            CompletedProcess object with results
+        """
+        import subprocess
+        import time
+        
+        tool_name = cmd[0] if cmd else "unknown"
+        target = cmd[-1] if len(cmd) > 1 else "unknown"
+        start_time = time.time()
+        
+        try:
+            # Use ToolExecutor if we have one, otherwise fall back to subprocess
+            if hasattr(self, 'tool_executor') and self.tool_executor:
+                result = self.tool_executor.execute_command(cmd, timeout=timeout)
+            else:
+                logger.info(f"Executing command: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            
+            execution_time = time.time() - start_time
+            
+            # Log to output manager if provided
+            if output_manager and hasattr(output_manager, 'log_tool_execution'):
+                output_manager.log_tool_execution(
+                    tool_name=tool_name,
+                    target=target,
+                    command=' '.join(cmd),
+                    output=result.stdout + result.stderr,
+                    service=service,
+                    execution_time=execution_time
+                )
+            
+            return result
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"Tool {tool_name} timed out after {timeout} seconds")
+            raise
+        except Exception as e:
+            logger.error(f"Error executing {tool_name}: {e}")
+            raise
     
     def can_handle(self, service: str, port: int) -> bool:
         """Check if this plugin can handle the given service/port.

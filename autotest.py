@@ -27,21 +27,13 @@ from core.discovery import Discovery
 from core.task_manager import TaskManager, Task, TaskStatus
 from core.output import OutputManager
 from core.utils import create_directory, get_timestamp, ToolChecker
+import subprocess
 
-# Import plugins
-from plugins.services.smb import SMBPlugin
-from plugins.services.rdp import RDPPlugin
-from plugins.services.snmp import SNMPPlugin
-from plugins.services.ssh import SSHPlugin
-from plugins.services.ssl import SSLPlugin
+# Dynamic plugin loading support
+import importlib
+import pkgutil
 
-# Import UI (optional - not available on Windows)
-try:
-    from ui.tui import AutoTestTUI
-    TUI_AVAILABLE = True
-except ImportError:
-    TUI_AVAILABLE = False
-    AutoTestTUI = None
+# TUI support removed for simplification
 
 
 # Setup logging
@@ -93,7 +85,6 @@ class AutoTest:
         self.task_manager = None
         self.output_manager = None
         self.plugins = []
-        self.tui = None
         
         # Shutdown handling
         self.shutdown_event = threading.Event()
@@ -106,46 +97,73 @@ class AutoTest:
         self.shutdown()
     
     def load_plugins(self) -> None:
-        """Load all available plugins."""
+        """Dynamically load all available plugins from the plugins directory."""
         logging.info("Loading plugins...")
         
-        # Load service plugins
-        try:
-            # SMB plugin
-            smb_plugin = SMBPlugin()
-            smb_plugin.output_manager = self.output_manager
-            self.plugins.append(smb_plugin)
-            logging.info(f"Loaded plugin: SMB")
-            
-            # RDP plugin
-            rdp_plugin = RDPPlugin()
-            rdp_plugin.output_manager = self.output_manager
-            self.plugins.append(rdp_plugin)
-            logging.info(f"Loaded plugin: RDP")
-            
-            # SNMP plugin
-            snmp_plugin = SNMPPlugin()
-            snmp_plugin.output_manager = self.output_manager
-            self.plugins.append(snmp_plugin)
-            logging.info(f"Loaded plugin: SNMP")
-            
-            # SSH plugin
-            ssh_plugin = SSHPlugin()
-            ssh_plugin.output_manager = self.output_manager
-            self.plugins.append(ssh_plugin)
-            logging.info(f"Loaded plugin: SSH")
-            
-            # SSL/TLS plugin
-            ssl_plugin = SSLPlugin()
-            ssl_plugin.output_manager = self.output_manager
-            self.plugins.append(ssl_plugin)
-            logging.info(f"Loaded plugin: SSL/TLS")
-            
-        except Exception as e:
-            logging.error(f"Failed to load plugins: {e}")
-            raise
+        plugins_loaded = 0
+        plugins_failed = []
         
-        logging.info(f"Loaded {len(self.plugins)} plugins")
+        # Define plugin directories to search
+        plugin_dirs = ['plugins.services', 'plugins.tools', 'plugins.exploits']
+        
+        for plugin_dir in plugin_dirs:
+            try:
+                # Import the package
+                package = importlib.import_module(plugin_dir)
+                package_path = Path(package.__file__).parent
+                
+                # Iterate through all modules in the package
+                for _, module_name, is_pkg in pkgutil.iter_modules([str(package_path)]):
+                    if is_pkg:
+                        continue  # Skip sub-packages
+                    
+                    module_path = f"{plugin_dir}.{module_name}"
+                    
+                    try:
+                        # Import the module
+                        module = importlib.import_module(module_path)
+                        
+                        # Look for classes that inherit from Plugin base class
+                        for attr_name in dir(module):
+                            attr = getattr(module, attr_name)
+                            
+                            # Check if it's a class and inherits from Plugin
+                            if (hasattr(attr, '__bases__') and 
+                                any('Plugin' in str(base) for base in attr.__bases__) and
+                                attr_name.endswith('Plugin') and
+                                attr_name not in ['Plugin', 'NetExecPlugin']):  # Exclude base classes
+                                
+                                try:
+                                    # Instantiate the plugin
+                                    plugin_instance = attr()
+                                    plugin_instance.output_manager = self.output_manager
+                                    self.plugins.append(plugin_instance)
+                                    logging.info(f"Loaded plugin: {attr_name} from {module_path}")
+                                    plugins_loaded += 1
+                                except Exception as e:
+                                    logging.warning(f"Failed to instantiate {attr_name}: {e}")
+                                    plugins_failed.append(f"{attr_name}: {str(e)}")
+                    
+                    except ImportError as e:
+                        logging.debug(f"Failed to import {module_path}: {e}")
+                        # This is normal for modules that have unmet dependencies
+                    except Exception as e:
+                        logging.warning(f"Error loading plugin from {module_path}: {e}")
+                        plugins_failed.append(f"{module_path}: {str(e)}")
+            
+            except ImportError:
+                logging.debug(f"Plugin directory {plugin_dir} not found")
+            except Exception as e:
+                logging.error(f"Error scanning plugin directory {plugin_dir}: {e}")
+        
+        if plugins_failed:
+            logging.warning(f"Failed to load {len(plugins_failed)} plugin(s): {', '.join(plugins_failed)}")
+        
+        if plugins_loaded == 0:
+            logging.error("No plugins loaded!")
+            raise AutoTestException("No plugins could be loaded")
+        
+        logging.info(f"Successfully loaded {plugins_loaded} plugin(s)")
     
     # Note: Plugin task execution is now handled within TaskManager
     # by providing a closure function when creating tasks
@@ -153,8 +171,7 @@ class AutoTest:
     def run_scan(
         self,
         targets: List[str],
-        ports: Optional[str] = None,
-        no_tui: bool = False
+        ports: Optional[str] = None
     ) -> None:
         """Run the main scanning workflow."""
         start_time = get_timestamp()
@@ -209,18 +226,7 @@ class AutoTest:
             self.task_manager.autotest_instance = self
             self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins, ports)
             
-            # Setup TUI if not disabled and available
-            if not no_tui and TUI_AVAILABLE:
-                try:
-                    self.tui = AutoTestTUI()
-                    tui_thread = threading.Thread(target=self.tui.run)
-                    tui_thread.daemon = True
-                    tui_thread.start()
-                except Exception as e:
-                    logging.warning(f"Failed to start TUI: {e}")
-                    self.tui = None
-            elif not no_tui and not TUI_AVAILABLE:
-                logging.info("Terminal UI not available on this platform")
+            # TUI support removed for simplification
             
             # Start task execution
             self.task_manager.start()
@@ -405,7 +411,6 @@ def _is_likely_file_path(target: str) -> bool:
 @click.option('-c', '--config', help='Path to configuration file')
 @click.option('-p', '--ports', help='Port specification (default: from config)')
 @click.option('-o', '--output', help='Output directory (default: from config)')
-@click.option('--tui', is_flag=True, help='Enable TUI progress display (experimental)')
 @click.option('--log-level', default='INFO', 
               type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR']),
               help='Logging level')
@@ -414,18 +419,19 @@ def _is_likely_file_path(target: str) -> bool:
 @click.option('--masscan-json', help='Import targets from Masscan JSON file')
 @click.option('--skip-tool-check', is_flag=True, help='Skip checking for required tools')
 @click.option('--check-tools', is_flag=True, help='Check all required tools and exit')
+@click.option('--setup', is_flag=True, help='Run interactive setup to install missing tools')
 def main(
     targets: tuple,
     config: Optional[str],
     ports: Optional[str],
     output: Optional[str],
-    tui: bool,
     log_level: str,
     file: Optional[str],
     nmap_xml: Optional[str],
     masscan_json: Optional[str],
     skip_tool_check: bool,
-    check_tools: bool
+    check_tools: bool,
+    setup: bool
 ):
     """
     AutoTest - Automated Network Penetration Testing Framework
@@ -458,6 +464,77 @@ def main(
         
         # Load plugins
         app.load_plugins()
+        
+        # Handle setup mode
+        if setup:
+            console.print("[bold]AutoTest Setup - Installing Required Tools[/bold]\n")
+            
+            # Load plugins to get their required tools
+            app.load_plugins()
+            
+            all_tools = set()
+            # Collect tools from all plugins
+            for plugin in app.plugins:
+                if hasattr(plugin, 'required_tools'):
+                    all_tools.update(plugin.required_tools)
+            
+            # Add discovery tools
+            all_tools.update(['nmap', 'masscan'])
+            
+            # Check all tools
+            tool_status = ToolChecker.check_required_tools(list(all_tools))
+            
+            missing_tools = []
+            for tool_name, status in tool_status.items():
+                if not status['available']:
+                    missing_tools.append((tool_name, status['install_command']))
+                else:
+                    console.print(f"[green]✓[/green] {tool_name} already installed")
+            
+            if not missing_tools:
+                console.print("\n[green]All tools are already installed![/green]")
+                sys.exit(0)
+            
+            console.print(f"\n[yellow]Found {len(missing_tools)} missing tool(s)[/yellow]")
+            
+            # Ask user if they want to install
+            for tool_name, install_cmd in missing_tools:
+                console.print(f"\nMissing: [red]{tool_name}[/red]")
+                console.print(f"Install command: [cyan]{install_cmd}[/cyan]")
+                
+                if click.confirm(f"Install {tool_name}?"):
+                    console.print(f"Installing {tool_name}...")
+                    try:
+                        # Run install command
+                        result = subprocess.run(
+                            install_cmd.split(),
+                            capture_output=True,
+                            text=True
+                        )
+                        
+                        if result.returncode == 0:
+                            console.print(f"[green]✓ Successfully installed {tool_name}[/green]")
+                        else:
+                            console.print(f"[red]✗ Failed to install {tool_name}[/red]")
+                            if result.stderr:
+                                console.print(f"Error: {result.stderr}")
+                    except Exception as e:
+                        console.print(f"[red]✗ Error installing {tool_name}: {e}[/red]")
+                else:
+                    console.print(f"[yellow]Skipped {tool_name}[/yellow]")
+            
+            # Final check
+            console.print("\n[bold]Setup complete. Checking final status...[/bold]")
+            tool_status = ToolChecker.check_required_tools(list(all_tools))
+            
+            still_missing = [tool for tool, status in tool_status.items() if not status['available']]
+            if still_missing:
+                console.print(f"\n[yellow]Warning: Some tools are still missing: {', '.join(still_missing)}[/yellow]")
+                console.print("[dim]You may need to install these manually or add them to your PATH[/dim]")
+            else:
+                console.print("\n[green]All tools successfully installed![/green]")
+            
+            sys.exit(0)
         
         # Handle tool checking
         if check_tools:
@@ -604,8 +681,8 @@ def main(
         if ports:
             console.print(f"[yellow]Port filter active: Only scanning port(s) {ports}[/yellow]")
         
-        # Run the scan (TUI is disabled by default unless --tui flag is used)
-        app.run_scan(processed_targets, ports, no_tui=not tui)
+        # Run the scan
+        app.run_scan(processed_targets, ports)
         
     except AutoTestException as e:
         console.print(f"[red]Error:[/red] {e}")

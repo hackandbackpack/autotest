@@ -5,9 +5,6 @@ Output management for AutoTest framework.
 import os
 import logging
 import json
-import csv
-import xml.etree.ElementTree as ET
-from xml.dom import minidom
 import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
@@ -98,10 +95,6 @@ class OutputManager:
             # Format results
             if format == "json":
                 content = self._format_json(results)
-            elif format == "xml":
-                content = self._format_xml(results)
-            elif format == "csv":
-                content = self._format_csv(results)
             elif format == "txt":
                 content = self._format_txt(results)
             else:
@@ -203,87 +196,6 @@ class OutputManager:
         """Format data as JSON."""
         return json.dumps(data, indent=2, ensure_ascii=False, default=str)
     
-    def _format_xml(self, data: Dict[str, Any]) -> str:
-        """Format data as XML."""
-        root = ET.Element("autotest_results")
-        root.set("timestamp", datetime.now().isoformat())
-        
-        self._dict_to_xml(data, root)
-        
-        # Pretty print XML
-        rough_string = ET.tostring(root, encoding='unicode')
-        reparsed = minidom.parseString(rough_string)
-        return reparsed.toprettyxml(indent="  ")
-    
-    def _dict_to_xml(self, data: Dict[str, Any], parent: ET.Element) -> None:
-        """Convert dictionary to XML elements."""
-        for key, value in data.items():
-            # Sanitize key for XML
-            key = key.replace(' ', '_').replace('-', '_')
-            
-            if isinstance(value, dict):
-                elem = ET.SubElement(parent, key)
-                self._dict_to_xml(value, elem)
-            elif isinstance(value, list):
-                list_elem = ET.SubElement(parent, key)
-                for item in value:
-                    if isinstance(item, dict):
-                        item_elem = ET.SubElement(list_elem, "item")
-                        self._dict_to_xml(item, item_elem)
-                    else:
-                        item_elem = ET.SubElement(list_elem, "item")
-                        item_elem.text = str(item)
-            else:
-                elem = ET.SubElement(parent, key)
-                elem.text = str(value)
-    
-    def _format_csv(self, data: Dict[str, Any]) -> str:
-        """Format data as CSV."""
-        # For CSV, we need to flatten the data structure
-        rows = []
-        
-        # Handle different data structures
-        if "hosts" in data:
-            # Network scan results
-            for host, info in data["hosts"].items():
-                if isinstance(info, dict) and "ports" in info:
-                    for port in info["ports"]:
-                        rows.append({
-                            "host": host,
-                            "port": port,
-                            "service": info.get("services", {}).get(str(port), "unknown")
-                        })
-                else:
-                    rows.append({"host": host, "info": str(info)})
-        else:
-            # Generic data - flatten it
-            rows = [self._flatten_dict(data)]
-        
-        if not rows:
-            return ""
-        
-        # Write CSV
-        import io
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-        
-        return output.getvalue()
-    
-    def _flatten_dict(self, d: Dict[str, Any], parent_key: str = '', 
-                     sep: str = '.') -> Dict[str, Any]:
-        """Flatten a nested dictionary."""
-        items = []
-        for k, v in d.items():
-            new_key = f"{parent_key}{sep}{k}" if parent_key else k
-            if isinstance(v, dict):
-                items.extend(self._flatten_dict(v, new_key, sep=sep).items())
-            elif isinstance(v, list):
-                items.append((new_key, ', '.join(map(str, v))))
-            else:
-                items.append((new_key, v))
-        return dict(items)
     
     def _format_txt(self, data: Dict[str, Any]) -> str:
         """Format data as human-readable text."""
@@ -486,7 +398,8 @@ class OutputManager:
     
     def generate_reports(self, results: Dict[str, Any]) -> Dict[str, str]:
         """
-        Generate reports in multiple formats.
+        Generate essential reports only: JSON for programmatic access
+        and security findings for human consumption.
         
         Args:
             results: Results dictionary to generate reports from
@@ -496,22 +409,16 @@ class OutputManager:
         """
         generated = {}
         
-        # Generate different report types
-        report_types = ['summary', 'detailed']
-        
-        for report_type in report_types:
-            try:
-                report_path = self.generate_report(results, report_type)
-                generated[report_type] = report_path
-            except Exception as e:
-                logging.error(f"Failed to generate {report_type} report: {e}")
-        
-        # Also save raw JSON results
+        # Save raw JSON results for programmatic access
         try:
             json_path = self.save_results(results, "scan_results", format="json")
             generated['json'] = json_path
+            logging.info(f"Generated json report: {json_path}")
         except Exception as e:
             logging.error(f"Failed to save JSON results: {e}")
+        
+        # Security findings are generated separately by the main application
+        # No need for summary, detailed, or executive reports
         
         return generated
     
@@ -569,7 +476,7 @@ class OutputManager:
                               update: bool = True) -> str:
         """
         Save security findings in a clean, copy-paste friendly format.
-        Groups findings by type and lists affected hosts.
+        Groups findings by severity and type, with intelligent deduplication.
         
         Args:
             findings: List of security findings
@@ -578,25 +485,34 @@ class OutputManager:
         Returns:
             Path to security findings file
         """
-        # Group findings by type and title
-        findings_by_type = {}
+        # Define severity order and colors for potential future use
+        severity_order = {'critical': 1, 'high': 2, 'medium': 3, 'low': 4, 'info': 5}
+        
+        # Group findings by severity and type
+        findings_by_severity = {
+            'critical': {},
+            'high': {},
+            'medium': {},
+            'low': {},
+            'info': {}
+        }
         
         # Map finding types to cleaner titles
         type_title_map = {
-            'self_signed_cert': 'Self-signed',
-            'cert_expired': 'Expired',
-            'cert_expiring': 'Expiring Soon',
+            'self_signed_cert': 'Self-signed Certificate',
+            'cert_expired': 'Expired Certificate',
+            'cert_expiring': 'Certificate Expiring Soon',
             'cert_validation': 'Certificate Validation Failed',
-            'weak_signature': 'Weak Signature',
-            'weak_rsa': 'Weak RSA',
-            'weak_ec': 'Weak EC',
-            'weak_protocol': 'Deprecated Protocols',
-            'weak_cipher': 'Weak Ciphers',
-            'medium_cipher': 'Medium Ciphers',
-            'heartbleed': 'Heartbleed',
-            'compression': 'TLS Compression',
-            'ssl_vulnerability': 'SSL Vulnerability',
-            'ssl_weakness': 'SSL Weakness',
+            'weak_signature': 'Weak Certificate Signature',
+            'weak_rsa': 'Weak RSA Key',
+            'weak_ec': 'Weak EC Key',
+            'weak_protocol': 'Weak TLS/SSL Protocol',
+            'weak_cipher': 'Weak Cipher Suite',
+            'medium_cipher': 'Medium Strength Cipher',
+            'heartbleed': 'Heartbleed Vulnerability',
+            'compression': 'TLS Compression Enabled',
+            'ssl_vulnerability': 'SSL/TLS Vulnerability',
+            'ssl_weakness': 'SSL/TLS Weakness',
             # SMB findings
             'smb_v1_enabled': 'SMB Version 1 Enabled',
             'smb_signing_not_enforced': 'SMB Signing Not Enforced',
@@ -604,21 +520,51 @@ class OutputManager:
             'smb_dangerous_shares': 'Administrative Shares Accessible',
             'ms17_010': 'MS17-010 (EternalBlue)',
             'smb_guest_access': 'SMB Guest Access Enabled',
+            # RDP findings
+            'rdp_critical_vulnerability': 'RDP Critical Vulnerability',
+            'rdp_weak_configuration': 'Weak RDP Configuration',
+            'rdp_admin_access': 'RDP Administrative Access',
+            'rdp_service_detected': 'RDP Service Detected',
             # SNMP findings
-            'snmp_community': 'Common Community String In Use',
+            'snmp_community': 'SNMP Community String Found',
             'snmp_default_community': 'Default SNMP Community String',
-            'snmp_weak_community': 'Weak SNMP Community String'
+            'snmp_weak_community': 'Weak SNMP Community String',
+            # SSH findings
+            'ssh_weak_kex': 'Weak SSH Key Exchange',
+            'ssh_weak_cipher': 'Weak SSH Cipher',
+            'ssh_weak_mac': 'Weak SSH MAC Algorithm',
+            'ssh_vulnerability': 'SSH Vulnerability',
+            'ssh_compression': 'SSH Compression Enabled'
         }
+        
+        # Special handling for certificate validation - deduplicate across trust stores
+        cert_validation_findings = {}
         
         for finding in findings:
             finding_type = finding.get('type', 'unknown')
-            finding_title = finding.get('title', 'Unknown Issue')
+            severity = finding.get('severity', 'info').lower()
             
-            # Use cleaner title if available
-            clean_title = type_title_map.get(finding_type, finding_title)
+            # Ensure valid severity
+            if severity not in findings_by_severity:
+                severity = 'info'
             
-            if clean_title not in findings_by_type:
-                findings_by_type[clean_title] = []
+            # Special handling for certificate validation to deduplicate
+            if finding_type == 'cert_validation':
+                target = finding.get('target', 'Unknown')
+                port = finding.get('port', '')
+                key = f"{target}:{port}" if port else target
+                
+                # Only keep one certificate validation finding per host:port
+                if key not in cert_validation_findings:
+                    cert_validation_findings[key] = finding
+                continue
+            
+            # Get clean title
+            clean_title = type_title_map.get(finding_type, finding.get('title', 'Unknown Issue'))
+            
+            # Initialize category if needed
+            if clean_title not in findings_by_severity[severity]:
+                findings_by_severity[severity][clean_title] = []
             
             # Create host entry
             target = finding.get('target', 'Unknown')
@@ -682,62 +628,102 @@ class OutputManager:
             
             # Check if this exact host+info combo already exists
             exists = False
-            for existing in findings_by_type[clean_title]:
+            for existing in findings_by_severity[severity][clean_title]:
                 if existing['host'] == entry['host'] and existing['info'] == entry['info']:
                     exists = True
                     break
             
             if not exists:
-                findings_by_type[clean_title].append(entry)
+                findings_by_severity[severity][clean_title].append(entry)
+        
+        # Now add the deduplicated certificate validation findings
+        for cert_finding in cert_validation_findings.values():
+            severity = cert_finding.get('severity', 'medium').lower()
+            clean_title = 'Certificate Validation Failed'
+            
+            if clean_title not in findings_by_severity[severity]:
+                findings_by_severity[severity][clean_title] = []
+            
+            target = cert_finding.get('target', 'Unknown')
+            port = cert_finding.get('port', '')
+            host_entry = f"{target}:{port}" if port else target
+            
+            findings_by_severity[severity][clean_title].append({
+                'host': host_entry,
+                'info': ''
+            })
         
         # Create findings report
         report_lines = []
         
         if not update:
-            report_lines.append("SECURITY FINDINGS")
+            report_lines.append("SECURITY FINDINGS REPORT")
+            report_lines.append("=" * 60)
             report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             report_lines.append("")
         
-        # Output findings in clean format
-        for finding_title, hosts in findings_by_type.items():
-            if hosts:
-                report_lines.append(finding_title)
-                
-                # Group hosts by additional info
-                hosts_by_info = {}
-                for host_data in hosts:
-                    info = host_data['info']
-                    if info not in hosts_by_info:
-                        hosts_by_info[info] = []
-                    hosts_by_info[info].append(host_data['host'])
-                
-                # Output hosts
-                if len(hosts_by_info) == 1 and '' in hosts_by_info:
-                    # No additional info - just list hosts
-                    for host in sorted(hosts_by_info['']):
-                        report_lines.append(host)
-                else:
-                    # Special handling for SNMP community strings
-                    if finding_title == "Common Community String In Use":
-                        # Show community string first, then hosts
-                        for info, host_list in sorted(hosts_by_info.items()):
-                            if info:  # info contains the community string
-                                report_lines.append(info)
-                                for host in sorted(host_list):
-                                    report_lines.append(host)
+        # Output findings by severity
+        for severity in ['critical', 'high', 'medium', 'low', 'info']:
+            findings_in_severity = findings_by_severity[severity]
+            
+            if not findings_in_severity:
+                continue
+            
+            # Add severity header
+            severity_headers = {
+                'critical': 'CRITICAL FINDINGS',
+                'high': 'HIGH RISK FINDINGS', 
+                'medium': 'MEDIUM RISK FINDINGS',
+                'low': 'LOW RISK FINDINGS',
+                'info': 'INFORMATIONAL FINDINGS'
+            }
+            
+            report_lines.append(severity_headers[severity])
+            report_lines.append("-" * len(severity_headers[severity]))
+            report_lines.append("")
+            
+            # Output each finding type within this severity
+            for finding_title, hosts in sorted(findings_in_severity.items()):
+                if hosts:
+                    report_lines.append(f"  {finding_title}")
+                    
+                    # Group hosts by additional info
+                    hosts_by_info = {}
+                    for host_data in hosts:
+                        info = host_data['info']
+                        if info not in hosts_by_info:
+                            hosts_by_info[info] = []
+                        hosts_by_info[info].append(host_data['host'])
+                    
+                    # Output hosts
+                    if len(hosts_by_info) == 1 and '' in hosts_by_info:
+                        # No additional info - just list hosts
+                        for host in sorted(hosts_by_info['']):
+                            report_lines.append(f"    {host}")
                     else:
-                        # Default: Group by additional info
-                        for info, host_list in sorted(hosts_by_info.items()):
-                            if info:
-                                # Show hosts with their additional info
-                                for host in sorted(host_list):
-                                    report_lines.append(f"{host} {info}")
-                            else:
-                                # Just the host
-                                for host in sorted(host_list):
-                                    report_lines.append(host)
-                
-                report_lines.append("")  # Empty line between finding types
+                        # Special handling for SNMP community strings
+                        if finding_title == "SNMP Community String Found":
+                            # Show community string first, then hosts
+                            for info, host_list in sorted(hosts_by_info.items()):
+                                if info:  # info contains the community string
+                                    report_lines.append(f"    Community: {info}")
+                                    for host in sorted(host_list):
+                                        report_lines.append(f"      {host}")
+                        else:
+                            # Default: Group by additional info
+                            for info, host_list in sorted(hosts_by_info.items()):
+                                if info:
+                                    # Show hosts with their additional info
+                                    for host in sorted(host_list):
+                                        report_lines.append(f"    {host} ({info})")
+                                else:
+                                    # Just the host
+                                    for host in sorted(host_list):
+                                        report_lines.append(f"    {host}")
+                    
+                    report_lines.append("")  # Empty line between finding types
+            
+            report_lines.append("")  # Empty line between severities
         
         # Save report
         mode = 'a' if update and os.path.exists(self.security_findings_path) else 'w'

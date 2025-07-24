@@ -1,103 +1,27 @@
 """SMB service plugin using netexec for AutoTest framework."""
 
-import subprocess
-import json
 import logging
 from typing import Dict, Any, List, Optional, Tuple
-from pathlib import Path
 import re
 
-from ..base import Plugin, PluginType, plugin
+from ..base import PluginType, plugin
+from ..base_classes.netexec_base import NetExecPlugin
 
 logger = logging.getLogger(__name__)
 
 
 @plugin(name="smb")
-class SMBPlugin(Plugin):
+class SMBPlugin(NetExecPlugin):
     """Plugin for testing SMB services using netexec."""
     
     def __init__(self):
         """Initialize SMB plugin."""
-        super().__init__()
+        super().__init__(protocol="smb", default_port=445)
         self.name = "SMB Service Plugin"
         self.version = "1.0.0"
         self.description = "Test SMB services for vulnerabilities using netexec"
         self.type = PluginType.SERVICE
-        self.required_tools = ["netexec"]
-        self.netexec_path = self._find_netexec()
         
-    def _find_netexec(self) -> str:
-        """Find netexec executable path.
-        
-        Returns:
-            Path to netexec executable
-        """
-        # Try common names (removed 'cme' as it conflicts with Config::Model::Edit)
-        for cmd in ["netexec", "nxc"]:
-            try:
-                # Run without arguments - netexec shows help/usage
-                result = subprocess.run([cmd], 
-                                     capture_output=True, text=True, timeout=5)
-                
-                # Check both stdout and stderr for netexec indicators
-                combined_output = (result.stdout + result.stderr).lower()
-                
-                # Look for netexec-specific strings from the help output
-                indicators = ["netexec", "nxc", "network execution tool", "smoothoperator", "neffisback"]
-                found_indicators = sum(1 for ind in indicators if ind in combined_output)
-                
-                if found_indicators >= 2:
-                    logger.info(f"Found netexec as '{cmd}'")
-                    return cmd
-                    
-            except FileNotFoundError:
-                continue
-            except subprocess.TimeoutExpired:
-                # Timeout might mean it's waiting for input
-                # Try with -h flag as fallback
-                try:
-                    result = subprocess.run([cmd, "-h"], 
-                                         capture_output=True, text=True, timeout=5)
-                    combined_output = (result.stdout + result.stderr).lower()
-                    if any(ind in combined_output for ind in ["netexec", "nxc", "crackmapexec"]):
-                        logger.info(f"Found netexec as '{cmd}' (using -h flag)")
-                        return cmd
-                except:
-                    pass
-            except Exception as e:
-                logger.debug(f"Error checking '{cmd}': {e}")
-                continue
-        
-        logger.warning("netexec not found in PATH")
-        return "netexec"  # Default fallback
-    
-    def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
-        """Check if netexec is available using custom logic."""
-        if skip_check or getattr(self, 'skip_tool_check', False):
-            return True, {}
-        
-        # Try to find netexec
-        actual_path = self._find_netexec()
-        
-        # Check if the found path actually works
-        try:
-            # Run with no args to get help output
-            result = subprocess.run([actual_path], 
-                                 capture_output=True, text=True, timeout=5)
-            
-            # Check for netexec in output (case insensitive)
-            combined_output = (result.stdout + result.stderr).lower()
-            if any(ind in combined_output for ind in ["netexec", "nxc", "crackmapexec"]):
-                return True, {"netexec": {"available": True, "path": actual_path}}
-        except:
-            pass
-        
-        # netexec not found
-        return False, {"netexec": {
-            "available": False, 
-            "install_command": "pipx install netexec",
-            "path": None
-        }}
     
     def get_required_params(self) -> List[str]:
         """Get required parameters for SMB plugin.
@@ -185,32 +109,21 @@ class SMBPlugin(Plugin):
             "findings": {}
         }
         
-        # Build base command
-        base_cmd = [self.netexec_path, "smb", target]
-        
-        # Add port if not default
-        if kwargs.get("port", 445) != 445:
-            base_cmd.extend(["--port", str(kwargs["port"])])
-        
-        # Add authentication if provided
-        if kwargs.get("username"):
-            base_cmd.extend(["-u", kwargs["username"]])
-            
-            if kwargs.get("password"):
-                base_cmd.extend(["-p", kwargs["password"]])
-            elif kwargs.get("hash"):
-                base_cmd.extend(["-H", kwargs["hash"]])
-            
-            if kwargs.get("domain"):
-                base_cmd.extend(["-d", kwargs["domain"]])
-            
-            if kwargs.get("local_auth"):
-                base_cmd.append("--local-auth")
+        # Build base command using parent class method
+        base_cmd = self.build_base_command(target, **kwargs)
         
         # Test basic connectivity
         try:
-            output = self._run_command(base_cmd, kwargs.get("timeout", 30))
-            results["findings"]["connectivity"] = self._parse_connectivity(output)
+            result = self.execute_netexec(
+                base_cmd, 
+                kwargs.get("timeout", 30),
+                self.output_manager
+            )
+            output = result.stdout + result.stderr
+            # Use parent class connectivity parser as base
+            connectivity = self.parse_connectivity_output(output)
+            # Enhance with SMB-specific parsing
+            results["findings"]["connectivity"] = self._enhance_smb_connectivity(connectivity, output)
         except Exception as e:
             logger.error(f"Connectivity test failed: {e}")
             results["success"] = False
@@ -222,10 +135,12 @@ class SMBPlugin(Plugin):
             # Enumerate shares
             if kwargs.get("shares", True):
                 try:
-                    shares_output = self._run_command(
+                    result = self.execute_netexec(
                         base_cmd + ["--shares"], 
-                        kwargs.get("timeout", 30)
+                        kwargs.get("timeout", 30),
+                        self.output_manager
                     )
+                    shares_output = result.stdout + result.stderr
                     results["shares"] = self._parse_shares(shares_output)
                 except Exception as e:
                     logger.error(f"Share enumeration failed: {e}")
@@ -233,10 +148,12 @@ class SMBPlugin(Plugin):
             # Enumerate sessions
             if kwargs.get("sessions", True):
                 try:
-                    sessions_output = self._run_command(
+                    result = self.execute_netexec(
                         base_cmd + ["--sessions"],
-                        kwargs.get("timeout", 30)
+                        kwargs.get("timeout", 30),
+                        self.output_manager
                     )
+                    sessions_output = result.stdout + result.stderr
                     results["sessions"] = self._parse_sessions(sessions_output)
                 except Exception as e:
                     logger.error(f"Session enumeration failed: {e}")
@@ -244,10 +161,12 @@ class SMBPlugin(Plugin):
             # Enumerate users
             if kwargs.get("users", False):
                 try:
-                    users_output = self._run_command(
+                    result = self.execute_netexec(
                         base_cmd + ["--users"],
-                        kwargs.get("timeout", 30)
+                        kwargs.get("timeout", 30),
+                        self.output_manager
                     )
+                    users_output = result.stdout + result.stderr
                     results["users"] = self._parse_users(users_output)
                 except Exception as e:
                     logger.error(f"User enumeration failed: {e}")
@@ -306,74 +225,29 @@ class SMBPlugin(Plugin):
         
         return results
     
-    def _run_command(self, cmd: List[str], timeout: int) -> str:
-        """Run a command with timeout.
-        
-        Args:
-            cmd: Command to run
-            timeout: Timeout in seconds
-            
-        Returns:
-            Command output
-        """
-        logger.debug(f"Running command: {' '.join(cmd)}")
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout
-            )
-            
-            if result.returncode != 0 and result.stderr:
-                logger.warning(f"Command stderr: {result.stderr}")
-            
-            return result.stdout + result.stderr
-        except subprocess.TimeoutExpired:
-            raise Exception(f"Command timed out after {timeout} seconds")
-        except Exception as e:
-            raise Exception(f"Command execution failed: {e}")
     
-    def _parse_connectivity(self, output: str) -> Dict[str, Any]:
-        """Parse connectivity test output.
+    def _enhance_smb_connectivity(self, base_info: Dict[str, Any], output: str) -> Dict[str, Any]:
+        """Enhance connectivity info with SMB-specific details.
         
         Args:
-            output: netexec output
+            base_info: Base connectivity info from parent class
+            output: Raw netexec output
             
         Returns:
-            Connectivity information
+            Enhanced connectivity information
         """
-        info = {
-            "accessible": False,
-            "hostname": None,
-            "domain": None,
-            "os": None,
-            "smb_signing": None,
-            "smb_version": None
-        }
+        # Start with base info from parent class
+        info = base_info.copy()
         
-        if "SMB" in output and "STATUS_" not in output:
-            info["accessible"] = True
-            
-            # Parse hostname and domain
-            hostname_match = re.search(r'name:([^\s\]]+)', output)
-            if hostname_match:
-                info["hostname"] = hostname_match.group(1)
-            
-            domain_match = re.search(r'domain:([^\s\]]+)', output)
-            if domain_match:
-                info["domain"] = domain_match.group(1)
-            
-            # Parse OS info
-            os_match = re.search(r'Windows\s+[\w\s\.\d]+', output)
-            if os_match:
-                info["os"] = os_match.group(0)
-            
-            # Check SMB signing
-            if "signing:True" in output:
+        # Add SMB-specific fields
+        info["smb_signing"] = None
+        info["smb_version"] = None
+        
+        if info["accessible"]:
+            # Check SMB signing (already handled by parent class)
+            if info.get("signing") == "enabled":
                 info["smb_signing"] = "required"
-            elif "signing:False" in output:
+            elif info.get("signing") == "disabled":
                 info["smb_signing"] = "not required"
                 
             # Check SMB version (netexec might show SMBv1 in output)
@@ -475,10 +349,12 @@ class SMBPlugin(Plugin):
         
         # Check for MS17-010 (EternalBlue)
         try:
-            ms17_output = self._run_command(
+            result = self.execute_netexec(
                 base_cmd + ["-M", "ms17-010"],
-                kwargs.get("timeout", 30)
+                kwargs.get("timeout", 30),
+                self.output_manager
             )
+            ms17_output = result.stdout + result.stderr
             if "VULNERABLE" in ms17_output:
                 vulns.append({
                     "name": "MS17-010 (EternalBlue)",
@@ -492,8 +368,10 @@ class SMBPlugin(Plugin):
         # Check for SMB signing
         if not kwargs.get("username"):
             # Can still check signing without auth
-            connectivity = self._parse_connectivity(
-                self._run_command(base_cmd, kwargs.get("timeout", 30))
+            result = self.execute_netexec(base_cmd, kwargs.get("timeout", 30), self.output_manager)
+            connectivity = self._enhance_smb_connectivity(
+                self.parse_connectivity_output(result.stdout + result.stderr),
+                result.stdout + result.stderr
             )
             if connectivity.get("smb_signing") == "not required":
                 vulns.append({
