@@ -86,7 +86,7 @@ SECURITY_TOOLS = {
     # SSL/TLS tools
     "testssl.sh": {
         "description": "Comprehensive SSL/TLS testing suite",
-        "install": "git clone https://github.com/drwetter/testssl.sh.git /opt/testssl.sh && sudo ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh",
+        "install": "sudo git clone https://github.com/drwetter/testssl.sh.git /opt/testssl.sh && sudo ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh || (git clone https://github.com/drwetter/testssl.sh.git ~/testssl.sh && mkdir -p ~/.local/bin && ln -sf ~/testssl.sh/testssl.sh ~/.local/bin/testssl.sh)",
         "check_command": ["testssl.sh", "--version"],
         "type": "script",
         "priority": "medium"
@@ -245,14 +245,56 @@ def install_tool(tool_name: str, tool_info: Dict, interactive: bool = True) -> b
                 print(f"[!] {tool_name} installed but not found in PATH. May need to restart terminal.")
                 return False
         else:
-            print(f"[-] Failed to install {tool_name}")
-            if result.stderr:
-                print(f"    Error: {result.stderr}")
-            return False
+            # Handle externally-managed Python environment
+            if "externally-managed-environment" in result.stderr and "pip3 install" in install_cmd:
+                return _handle_python_package(tool_name, tool_info, interactive)
+            else:
+                print(f"[-] Failed to install {tool_name}")
+                if result.stderr:
+                    print(f"    Error: {result.stderr}")
+                return False
             
     except Exception as e:
         print(f"[-] Error installing {tool_name}: {e}")
         return False
+
+
+def _handle_python_package(tool_name: str, tool_info: Dict, interactive: bool) -> bool:
+    """Handle Python package installation with externally-managed environment."""
+    print(f"[!] System Python is externally managed. Trying alternatives...")
+    
+    alternatives = [
+        ("system package", f"sudo apt-get update && sudo apt-get install -y python3-{tool_name.replace('_', '-')}"),
+        ("pipx", f"pipx install {tool_name}"),
+        ("user install", f"pip3 install --user --break-system-packages {tool_name}")
+    ]
+    
+    for method, cmd in alternatives:
+        if interactive:
+            response = input(f"    Try {method}? (y/N): ")
+            if response.lower() != 'y':
+                continue
+        
+        print(f"    Trying {method}...")
+        try:
+            # Install pipx if needed
+            if "pipx install" in cmd:
+                pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
+                if pipx_check.returncode != 0:
+                    print("    Installing pipx first...")
+                    subprocess.run("sudo apt-get install -y pipx", shell=True, capture_output=True)
+            
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[+] Successfully installed {tool_name} via {method}")
+                return True
+            else:
+                print(f"    {method} failed: {result.stderr}")
+        except Exception as e:
+            print(f"    {method} error: {e}")
+    
+    print(f"[-] All installation methods failed for {tool_name}")
+    return False
 
 def check_prerequisites():
     """Check for installation prerequisites."""

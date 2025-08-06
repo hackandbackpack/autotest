@@ -199,7 +199,7 @@ def check_tool(tool_name: str, tool_info: Dict) -> Tuple[bool, Optional[str]]:
 
 
 def install_tool(tool_name: str, tool_info: Dict) -> bool:
-    """Install a tool on Linux."""
+    """Install a tool on Linux with fallback options for Python packages."""
     print(f"\n[*] Installing {tool_name}...")
     
     install_cmd = tool_info.get("install")
@@ -222,20 +222,107 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
             print(f"[+] Successfully installed {tool_name}")
             return True
         else:
-            print(f"[-] Failed to install {tool_name}")
-            if result.stderr:
-                print(f"    Error: {result.stderr}")
+            # Handle externally-managed Python environment
+            if "externally-managed-environment" in result.stderr and "pip3 install" in install_cmd:
+                return _handle_python_package_install(tool_name, tool_info)
             
-            # For Python packages, suggest alternatives
-            if "pip3 install" in install_cmd:
-                print(f"    Try: sudo apt install python3-{tool_name}")
-                print(f"    Or: pip3 install --user {tool_name}")
+            # Handle permission denied for git clone to /opt
+            elif "Permission denied" in result.stderr and "/opt/" in install_cmd:
+                return _handle_opt_install(tool_name, install_cmd)
             
-            return False
+            else:
+                print(f"[-] Failed to install {tool_name}")
+                if result.stderr:
+                    print(f"    Error: {result.stderr}")
+                return False
             
     except Exception as e:
         print(f"[-] Error installing {tool_name}: {e}")
         return False
+
+
+def _handle_python_package_install(tool_name: str, tool_info: Dict) -> bool:
+    """Handle Python package installation with externally-managed environment."""
+    print(f"[!] System Python is externally managed. Trying alternatives...")
+    
+    # Try system package first
+    system_package = f"python3-{tool_name.replace('_', '-')}"
+    print(f"    Trying system package: {system_package}")
+    
+    try:
+        result = subprocess.run(
+            f"sudo apt-get update && sudo apt-get install -y {system_package}",
+            shell=True, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print(f"[+] Successfully installed {tool_name} via system package")
+            return True
+    except:
+        pass
+    
+    # Try pipx
+    print(f"    Trying pipx...")
+    try:
+        # First ensure pipx is installed
+        pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
+        if pipx_check.returncode != 0:
+            print(f"    Installing pipx...")
+            subprocess.run("sudo apt-get install -y pipx", shell=True, capture_output=True)
+        
+        result = subprocess.run(f"pipx install {tool_name}", shell=True, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"[+] Successfully installed {tool_name} via pipx")
+            return True
+    except:
+        pass
+    
+    # Try --user installation with --break-system-packages
+    print(f"    Trying user installation with --break-system-packages...")
+    try:
+        result = subprocess.run(
+            f"pip3 install --user --break-system-packages {tool_name}",
+            shell=True, capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print(f"[+] Successfully installed {tool_name} with --user --break-system-packages")
+            return True
+    except:
+        pass
+    
+    print(f"[-] All installation methods failed for {tool_name}")
+    print(f"    Manual options:")
+    print(f"    1. sudo apt install python3-{tool_name.replace('_', '-')}")
+    print(f"    2. pipx install {tool_name}")
+    print(f"    3. python3 -m venv venv && source venv/bin/activate && pip install {tool_name}")
+    return False
+
+
+def _handle_opt_install(tool_name: str, install_cmd: str) -> bool:
+    """Handle installations that need /opt access by using user directory."""
+    print(f"[!] Permission denied to /opt. Installing to user directory...")
+    
+    if "testssl.sh" in tool_name:
+        # Install testssl.sh to user's home directory
+        user_install_cmd = install_cmd.replace("/opt/testssl.sh", f"{Path.home()}/testssl.sh")
+        user_install_cmd = user_install_cmd.replace("/usr/local/bin/testssl.sh", f"{Path.home()}/.local/bin/testssl.sh")
+        
+        # Ensure .local/bin exists
+        local_bin = Path.home() / ".local" / "bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            result = subprocess.run(user_install_cmd, shell=True, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[+] Successfully installed {tool_name} to user directory")
+                print(f"    Location: {Path.home()}/testssl.sh")
+                print(f"    Symlink: {local_bin}/testssl.sh")
+                return True
+        except:
+            pass
+    
+    print(f"[-] Failed to install {tool_name} to user directory")
+    print(f"    Try running with sudo for system-wide installation")
+    return False
 
 
 def check_prerequisites():
@@ -400,9 +487,31 @@ def main():
         if available and path:
             tool_paths[tool_name] = path
     
-    with open("tool_paths.json", 'w') as f:
-        json.dump(tool_paths, f, indent=2)
-    print(f"\n[+] Tool paths saved to tool_paths.json")
+    # Try to save in current directory, fallback to user directory
+    config_paths = [
+        "tool_paths.json",
+        str(Path.home() / ".autotest_tool_paths.json"),
+        "/tmp/autotest_tool_paths.json"
+    ]
+    
+    saved = False
+    for config_path in config_paths:
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(tool_paths, f, indent=2)
+            print(f"\n[+] Tool paths saved to {config_path}")
+            saved = True
+            break
+        except PermissionError:
+            continue
+        except Exception as e:
+            print(f"[-] Failed to save to {config_path}: {e}")
+            continue
+    
+    if not saved:
+        print(f"\n[!] Could not save tool paths configuration")
+        print("    Tool detection will run each time autotest starts")
+    
     print("\n[*] AutoTest is ready for Linux security testing!")
 
 
