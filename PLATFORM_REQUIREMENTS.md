@@ -74,11 +74,13 @@ sudo apt-get install make gcc g++ cmake
 AutoTest provides comprehensive tool installation:
 
 ```bash
-# Enhanced installation (recommended)
-python3 enhanced_installation.py
-
-# Basic installation  
+# Comprehensive installation (recommended)
 python3 installation.py
+
+# Installation with options
+python3 installation.py --auto        # Automatic installation
+python3 installation.py --check       # Check tools only
+python3 installation.py --categories  # Show available tools
 
 # Via autotest setup
 python3 autotest.py --setup
@@ -120,7 +122,7 @@ If migrating from cross-platform security frameworks:
 
 ### Support and Documentation
 
-- **Installation Issues**: Check `enhanced_installation.py --help`
+- **Installation Issues**: Check `python3 installation.py --help`
 - **Tool Problems**: Run `python3 autotest.py --check-tools`
 - **Linux Setup**: Refer to your distribution's documentation
 - **Security Best Practices**: Follow responsible disclosure guidelines

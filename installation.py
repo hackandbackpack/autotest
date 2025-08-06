@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """
-Install and configure required tools for AutoTest.
+AutoTest Security Tools Installation & Setup
 Linux-only security testing framework installation.
 
 NOTE: AutoTest is designed for Linux penetration testing environments only.
 
-This script:
-1. Checks for required tools on Linux systems
-2. Installs missing tools via package managers and pip
-3. Handles Linux PATH configuration
+This comprehensive installer:
+1. Verifies Linux system compatibility 
+2. Checks for required tools and prerequisites
+3. Installs missing tools via multiple methods:
+   - Linux package managers (apt, yum, dnf)
+   - Python packages with externally-managed environment handling
+   - Source compilation with fallback options
+4. Handles modern Python environment restrictions (PEP 668)
+5. Provides interactive and automated installation modes
+6. Configures tool paths and system integration
+
+Usage:
+  python3 installation.py              # Interactive installation
+  python3 installation.py --auto      # Automatic installation (no prompts)
+  python3 installation.py --check     # Check tools only (no installation)
 """
 
 import os
@@ -18,99 +29,144 @@ import json
 import shutil
 import time
 import logging
+import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
-# Tool definitions with install commands
+# Comprehensive tool definitions with priorities and descriptions
 TOOLS = {
-    # Discovery tools
+    # Discovery tools (High Priority)
     "nmap": {
+        "description": "Network discovery and security auditing",
         "install": "sudo apt-get update && sudo apt-get install -y nmap || sudo yum install -y nmap || sudo dnf install -y nmap",
         "check_command": ["nmap", "--version"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "high",
+        "category": "discovery"
     },
     "masscan": {
+        "description": "Fast port scanner",
         "install": "sudo apt-get update && sudo apt-get install -y masscan || (git clone https://github.com/robertdavidgraham/masscan.git /tmp/masscan && cd /tmp/masscan && make && sudo make install)",
         "check_command": ["masscan", "--version"],
-        "type": "binary"
+        "type": "binary", 
+        "priority": "high",
+        "category": "discovery"
     },
     
-    # Web security tools
+    # Web security tools (Medium Priority)
     "nikto": {
+        "description": "Web server vulnerability scanner",
         "install": "sudo apt-get update && sudo apt-get install -y nikto || (git clone https://github.com/sullo/nikto.git /opt/nikto && sudo ln -sf /opt/nikto/program/nikto.pl /usr/local/bin/nikto)",
         "check_command": ["nikto", "-Version"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "medium",
+        "category": "web"
     },
     "gobuster": {
+        "description": "Directory and file brute-forcer",
         "install": "sudo apt-get update && sudo apt-get install -y gobuster || go install github.com/OJ/gobuster/v3@latest",
         "check_command": ["gobuster", "version"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "medium",
+        "category": "web"
     },
     "whatweb": {
+        "description": "Web application fingerprinter",
         "install": "sudo apt-get update && sudo apt-get install -y whatweb || (sudo apt-get install -y ruby-dev && gem install whatweb)",
         "check_command": ["whatweb", "--version"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "medium",
+        "category": "web"
     },
     
-    # DNS tools
+    # DNS tools (Medium Priority)
     "dnsrecon": {
+        "description": "DNS enumeration and reconnaissance",
         "install": "sudo apt-get update && sudo apt-get install -y dnsrecon || pip3 install dnsrecon",
         "check_command": ["dnsrecon", "--help"],
         "python_module": "dnsrecon",
-        "type": "python"
+        "type": "python",
+        "priority": "medium",
+        "category": "dns"
     },
     "dig": {
+        "description": "DNS lookup utility",
         "install": "sudo apt-get update && sudo apt-get install -y dnsutils || sudo yum install -y bind-utils || sudo dnf install -y bind-utils",
         "check_command": ["dig", "-v"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "high",
+        "category": "dns"
     },
     
-    # SSH tools
+    # SSH tools (Medium Priority)
     "ssh-audit": {
+        "description": "SSH server security auditing tool",
         "install": "pip3 install ssh-audit",
         "check_command": ["ssh-audit", "--help"],
         "python_module": "ssh_audit",
-        "type": "python"
+        "type": "python",
+        "priority": "medium",
+        "category": "ssh"
     },
     
-    # SSL/TLS tools
+    # SSL/TLS tools (Medium/Low Priority)
     "testssl.sh": {
-        "install": "git clone https://github.com/drwetter/testssl.sh.git /opt/testssl.sh && sudo ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh",
+        "description": "Comprehensive SSL/TLS testing suite",
+        "install": "sudo git clone https://github.com/drwetter/testssl.sh.git /opt/testssl.sh && sudo ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh || (git clone https://github.com/drwetter/testssl.sh.git ~/testssl.sh && mkdir -p ~/.local/bin && ln -sf ~/testssl.sh/testssl.sh ~/.local/bin/testssl.sh)",
         "check_command": ["testssl.sh", "--version"],
-        "type": "script"
+        "type": "script",
+        "priority": "medium",
+        "category": "ssl"
     },
     "sslyze": {
+        "description": "SSL/TLS configuration analyzer",
         "install": "pip3 install sslyze",
         "check_command": ["sslyze", "--help"],
         "python_module": "sslyze",
-        "type": "python"
+        "type": "python",
+        "priority": "low",
+        "category": "ssl"
     },
     
-    # RPC tools
+    # RPC tools (Low Priority)
     "rpcinfo": {
+        "description": "RPC service enumeration tool",
         "install": "sudo apt-get update && sudo apt-get install -y rpcbind nfs-common || sudo yum install -y rpcbind || sudo dnf install -y rpcbind",
         "check_command": ["rpcinfo"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "low",
+        "category": "rpc"
     },
     
-    # SMB/NetBIOS tools
+    # SMB/NetBIOS tools (Medium Priority)
     "netexec": {
+        "description": "Network execution and credential testing tool",
         "install": "pip3 install netexec",
         "check_command": ["netexec", "--help"],
         "python_module": "netexec",
-        "type": "python"
+        "type": "python",
+        "priority": "medium",
+        "category": "smb",
+        "requires_auth": True
     },
     
-    # Authentication testing tools
+    # Authentication testing tools (High Priority)
     "hydra": {
+        "description": "Network authentication brute-forcer",
         "install": "sudo apt-get update && sudo apt-get install -y hydra || sudo yum install -y hydra || sudo dnf install -y hydra",
         "check_command": ["hydra"],  # hydra shows help without any flags
-        "type": "binary"
+        "type": "binary",
+        "priority": "high",
+        "category": "auth",
+        "requires_auth": True
     },
     "onesixtyone": {
+        "description": "Fast SNMP scanner",
         "install": "sudo apt-get update && sudo apt-get install -y onesixtyone || (git clone https://github.com/trailofbits/onesixtyone.git /tmp/onesixtyone && cd /tmp/onesixtyone && make && sudo make install)",
         "check_command": ["onesixtyone"],
-        "type": "binary"
+        "type": "binary",
+        "priority": "low",
+        "category": "snmp"
     }
 }
 
@@ -157,8 +213,7 @@ def check_tool(tool_name: str, tool_info: Dict) -> Tuple[bool, Optional[str]]:
             result = subprocess.run(
                 [sys.executable, "-m", tool_info["python_module"], "--help"],
                 capture_output=True,
-                timeout=5,
-                stderr=subprocess.DEVNULL
+                timeout=5
             )
             if result.returncode == 0:
                 return True, f"{sys.executable} -m {tool_info['python_module']}"
@@ -173,8 +228,7 @@ def check_tool(tool_name: str, tool_info: Dict) -> Tuple[bool, Optional[str]]:
         result = subprocess.run(
             check_cmd,
             capture_output=True,
-            timeout=5,
-            stderr=subprocess.DEVNULL
+            timeout=5
         )
         # Accept any exit code - some tools return non-zero for help
         path = shutil.which(check_cmd[0])
@@ -389,57 +443,184 @@ def check_tools() -> Tuple[bool, List[str]]:
     return len(missing_tools) == 0, missing_tools
 
 
+def display_header():
+    """Display the installer header."""
+    print("=" * 70)
+    print("AutoTest Security Tools Installation & Setup (Linux Only)")
+    print("=" * 70)
+
+def show_tool_categories():
+    """Display tools organized by category and priority."""
+    categories = {}
+    for tool_name, tool_info in TOOLS.items():
+        category = tool_info.get("category", "other")
+        priority = tool_info.get("priority", "medium")
+        if category not in categories:
+            categories[category] = {"high": [], "medium": [], "low": []}
+        categories[category][priority].append((tool_name, tool_info))
+    
+    print("\n📋 AutoTest Security Tool Categories:")
+    print("-" * 50)
+    
+    for category, priorities in categories.items():
+        category_name = category.upper().replace("_", " ")
+        print(f"\n🔧 {category_name} TOOLS:")
+        
+        for priority in ["high", "medium", "low"]:
+            if priorities[priority]:
+                priority_label = f"{priority.upper()} PRIORITY"
+                if priority == "high":
+                    priority_label += " (Essential)"
+                elif priority == "medium": 
+                    priority_label += " (Recommended)"
+                else:
+                    priority_label += " (Optional)"
+                
+                print(f"  {priority_label}:")
+                for tool_name, tool_info in priorities[priority]:
+                    description = tool_info.get("description", "")
+                    auth_note = " (REQUIRES --auth-test)" if tool_info.get("requires_auth") else ""
+                    print(f"    • {tool_name:<15} {description}{auth_note}")
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="AutoTest Security Tools Installation & Setup",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 installation.py                    # Interactive installation
+  python3 installation.py --auto            # Automatic installation (all tools)
+  python3 installation.py --auto --high     # Install only high priority tools
+  python3 installation.py --check           # Check tools only (no installation)
+  python3 installation.py --categories      # Show tool categories and exit
+        """
+    )
+    
+    parser.add_argument("--auto", action="store_true",
+                        help="Automatic installation without prompts")
+    parser.add_argument("--check", action="store_true", 
+                        help="Check tools only, do not install")
+    parser.add_argument("--categories", action="store_true",
+                        help="Show tool categories and exit")
+    parser.add_argument("--high", action="store_true",
+                        help="Install only high priority tools")
+    parser.add_argument("--medium", action="store_true", 
+                        help="Install high and medium priority tools")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Verbose output")
+    
+    return parser.parse_args()
+
 def main():
     """Main installation routine for Linux systems."""
-    print("AutoTest Installation & Setup (Linux Only)")
-    print("=" * 50)
+    args = parse_arguments()
+    
+    if args.categories:
+        display_header()
+        show_tool_categories()
+        return
+        
+    display_header()
     
     # Verify Linux system
     check_linux_system()
     
     print(f"System: {os.uname().sysname} {os.uname().release}")
     print(f"Python: {sys.version}")
+    print()
     
     # Check prerequisites
     if not check_prerequisites():
         print("\n[!] Please install missing prerequisites first.")
+        print("    Install with: sudo apt-get install python3 python3-pip git build-essential")
         return
     
     # Check if running as root (discouraged for user tools)
-    if os.geteuid() == 0:
+    if os.geteuid() == 0 and not args.auto:
         print("\n[!] Warning: Running as root is not recommended for user tools")
         print("    Tool paths will be saved for root user, not your regular user")
         response = input("\nContinue anyway? (y/n): ")
         if response.lower() != 'y':
             sys.exit(0)
     
-    # Check all tools
-    print("\n\nChecking required tools...")
+    # Determine which tools to check based on arguments
+    tools_to_check = {}
+    if args.high:
+        tools_to_check = {name: info for name, info in TOOLS.items() 
+                         if info.get("priority") == "high"}
+        print("Checking HIGH PRIORITY tools only...")
+    elif args.medium:
+        tools_to_check = {name: info for name, info in TOOLS.items() 
+                         if info.get("priority") in ["high", "medium"]}
+        print("Checking HIGH and MEDIUM PRIORITY tools...")
+    else:
+        tools_to_check = TOOLS
+        print("Checking all security tools...")
+    
     print("-" * 50)
     
     missing_tools = []
     available_tools = []
     
-    for tool_name, tool_info in TOOLS.items():
+    for tool_name, tool_info in tools_to_check.items():
         available, path = check_tool(tool_name, tool_info)
         
         if available:
-            print(f"[+] {tool_name:<15} Available at: {path}")
+            priority = tool_info.get("priority", "medium").upper()
+            category = tool_info.get("category", "other").upper()
+            print(f"[+] {tool_name:<15} Available at: {path} ({priority} {category})")
             available_tools.append(tool_name)
         else:
-            print(f"[-] {tool_name:<15} Not found")
+            priority = tool_info.get("priority", "medium").upper() 
+            category = tool_info.get("category", "other").upper()
+            print(f"[-] {tool_name:<15} Not found ({priority} {category})")
             missing_tools.append(tool_name)
+    
+    # Show summary
+    total_tools = len(tools_to_check)
+    print(f"\n📊 Summary: {len(available_tools)}/{total_tools} tools available, {len(missing_tools)} missing")
+    
+    # Exit if just checking
+    if args.check:
+        print("\n[*] Tool check complete. Use --auto to install missing tools.")
+        return
     
     # Install missing tools
     if missing_tools:
-        print(f"\n\nMissing tools: {', '.join(missing_tools)}")
-        response = input("\nInstall missing tools? (y/n): ")
+        print(f"\n📦 Missing tools by priority:")
+        missing_by_priority = {"high": [], "medium": [], "low": []}
+        for tool_name in missing_tools:
+            priority = TOOLS[tool_name].get("priority", "medium")
+            missing_by_priority[priority].append(tool_name)
         
-        if response.lower() == 'y':
+        for priority in ["high", "medium", "low"]:
+            if missing_by_priority[priority]:
+                priority_label = priority.upper()
+                if priority == "high":
+                    priority_label += " PRIORITY (Essential)"
+                elif priority == "medium":
+                    priority_label += " PRIORITY (Recommended)" 
+                else:
+                    priority_label += " PRIORITY (Optional)"
+                
+                print(f"  {priority_label}: {', '.join(missing_by_priority[priority])}")
+        
+        if args.auto:
+            install_missing = True
+        else:
+            response = input(f"\nInstall {len(missing_tools)} missing tools? (y/n): ")
+            install_missing = response.lower() == 'y'
+        
+        if install_missing:
+            successful_installs = 0
+            print(f"\n🔧 Installing {len(missing_tools)} tools...")
+            
             for tool_name in missing_tools:
-                tool_info = TOOLS[tool_name]
+                tool_info = tools_to_check[tool_name]
                 
                 if install_tool(tool_name, tool_info):
+                    successful_installs += 1
                     # Wait a moment for system to update
                     time.sleep(1)
                     
@@ -449,7 +630,7 @@ def main():
                         print(f"[+] {tool_name} is now available at: {path}")
                     else:
                         # Refresh PATH and try again
-                        subprocess.run(["hash", "-r"], capture_output=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(["hash", "-r"], capture_output=True)
                         
                         # Get fresh PATH from shell
                         try:
@@ -468,6 +649,8 @@ def main():
                         else:
                             print(f"[!] {tool_name} installed but not found in PATH")
                             print("    You may need to restart your terminal")
+            
+            print(f"\n📈 Installation Results: {successful_installs}/{len(missing_tools)} tools successfully installed")
     
     # Final summary
     print("\n\nFinal Summary")

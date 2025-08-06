@@ -34,7 +34,7 @@ cd autotest
 pip install -r requirements.txt
 
 # Run the installation script to set up required tools
-python installation.py
+python3 installation.py
 ```
 
 ### Tool Setup
@@ -48,8 +48,14 @@ AutoTest requires several security tools. The installation scripts will:
 
 Run the comprehensive installer:
 ```bash
-# Enhanced installation (recommended)
-python3 enhanced_installation.py
+# Comprehensive installation (recommended)
+python3 installation.py
+
+# Interactive installation with options
+python3 installation.py --categories  # Show available tools
+python3 installation.py --check       # Check tools only
+python3 installation.py --auto        # Automatic installation
+python3 installation.py --high        # Install high priority tools only
 
 # Or use the built-in setup
 python3 autotest.py --setup
