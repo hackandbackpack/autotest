@@ -224,6 +224,7 @@ class AutoTest:
             # Create tasks from discovery results with plugin executor
             # Pass the AutoTest instance so tasks can access execute_plugin_task
             self.task_manager.autotest_instance = self
+            self.task_manager.auth_test_enabled = auth_test
             self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins, ports)
             
             # TUI support removed for simplification
@@ -420,6 +421,7 @@ def _is_likely_file_path(target: str) -> bool:
 @click.option('--skip-tool-check', is_flag=True, help='Skip checking for required tools')
 @click.option('--check-tools', is_flag=True, help='Check all required tools and exit')
 @click.option('--setup', is_flag=True, help='Run interactive setup to install missing tools')
+@click.option('--auth-test', is_flag=True, help='Enable authentication testing (hydra, ncrack) - REQUIRES PROPER AUTHORIZATION')
 def main(
     targets: tuple,
     config: Optional[str],
@@ -431,7 +433,8 @@ def main(
     masscan_json: Optional[str],
     skip_tool_check: bool,
     check_tools: bool,
-    setup: bool
+    setup: bool,
+    auth_test: bool
 ):
     """
     AutoTest - Automated Network Penetration Testing Framework
@@ -448,6 +451,10 @@ def main(
         autotest -f targets.txt
         autotest --nmap-xml scan.xml
         autotest --masscan-json results.json
+        autotest --auth-test 192.168.1.0/24  # Enable authentication testing
+    
+    WARNING: --auth-test enables brute force authentication attacks.
+    Only use with explicit written authorization from system owners.
     
     Note: When using -f, --nmap-xml, or --masscan-json, command-line targets are optional.
     """

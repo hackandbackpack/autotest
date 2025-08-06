@@ -567,11 +567,17 @@ class TaskManager:
                                         
                                         # Execute the plugin
                                         try:
-                                            result = plugin_instance.execute(
-                                                target_host, 
-                                                port=target_port,
-                                                output_dir=output_dir
-                                            )
+                                            # Prepare plugin parameters
+                                            plugin_params = {
+                                                "port": target_port,
+                                                "output_dir": output_dir
+                                            }
+                                            
+                                            # Add auth_test flag if this task manager has it set
+                                            if hasattr(self, 'auth_test_enabled'):
+                                                plugin_params["auth_test_enabled"] = self.auth_test_enabled
+                                            
+                                            result = plugin_instance.execute(target_host, **plugin_params)
                                             logging.debug(f"Plugin {plugin_instance.name} returned: {result}")
                                             return result
                                         except Exception as e:

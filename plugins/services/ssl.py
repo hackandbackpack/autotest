@@ -47,33 +47,22 @@ class SSLPlugin(Plugin):
         if shutil.which(self.tool_name):
             return self.tool_name
         
-        # Try in Python Scripts directory
+        # Try in Python user bin directory
         try:
             import site
             from pathlib import Path
-            import platform
             
-            # Get Scripts directory
             user_base = site.USER_BASE
-            if platform.system() == "Windows":
-                scripts_dir = Path(user_base) / "Scripts"
-                tool_path = scripts_dir / "sslyze.exe"
-            else:
-                scripts_dir = Path(user_base) / "bin"
-                tool_path = scripts_dir / "sslyze"
+            scripts_dir = Path(user_base) / "bin"
+            tool_path = scripts_dir / "sslyze"
             
             if tool_path.exists():
                 return str(tool_path)
                 
-            # Also check Microsoft Store Python location
-            if platform.system() == "Windows":
-                local_packages = Path.home() / "AppData" / "Local" / "Packages"
-                if local_packages.exists():
-                    for item in local_packages.iterdir():
-                        if item.name.startswith("PythonSoftwareFoundation.Python"):
-                            ms_scripts = item / "LocalCache" / "local-packages" / "Python311" / "Scripts" / "sslyze.exe"
-                            if ms_scripts.exists():
-                                return str(ms_scripts)
+            # Also check ~/.local/bin
+            local_bin = Path.home() / ".local" / "bin" / "sslyze"
+            if local_bin.exists():
+                return str(local_bin)
         except:
             pass
         

@@ -2,6 +2,8 @@
 
 AutoTest is a comprehensive automated penetration testing framework that orchestrates multiple security tools to perform reconnaissance, vulnerability scanning, and exploitation of network targets.
 
+**🐧 Linux-Only Framework**: AutoTest is designed exclusively for Linux penetration testing environments. Windows and macOS are not supported.
+
 ## Features
 
 - **Automated Workflow**: Seamlessly integrates multiple security tools in a logical testing sequence
@@ -16,8 +18,12 @@ AutoTest is a comprehensive automated penetration testing framework that orchest
 
 ### Prerequisites
 
-- Python 3.8+
-- Windows, Linux, or macOS
+- **Linux Operating System** (Ubuntu, Debian, Kali, etc.)
+- **Python 3.8+** with pip3
+- **Sudo privileges** for tool installation  
+- **Network access** to target systems
+
+See [PLATFORM_REQUIREMENTS.md](PLATFORM_REQUIREMENTS.md) for detailed system requirements.
 - Required tools will be installed automatically
 
 ### Install from Source
@@ -33,16 +39,20 @@ python installation.py
 
 ### Tool Setup
 
-AutoTest requires several security tools. The `installation.py` script will:
-- Check for required tools (nmap, masscan, sslyze, etc.)
-- Install Python-based tools via pip
-- Add Python Scripts directory to PATH (Windows)
-- Create wrapper scripts if needed
-- Save tool paths for AutoTest to use
+AutoTest requires several security tools. The installation scripts will:
+- Check for required tools (nmap, masscan, nikto, hydra, etc.)
+- Install tools via Linux package managers (apt, yum, dnf)
+- Install Python-based tools via pip3
+- Verify tool installation and paths
+- Save tool configurations for AutoTest to use
 
-Run the installer:
+Run the comprehensive installer:
 ```bash
-python installation.py
+# Enhanced installation (recommended)
+python3 enhanced_installation.py
+
+# Or use the built-in setup
+python3 autotest.py --setup
 ```
 
 ## Usage
