@@ -82,7 +82,7 @@ TOOLS = {
     # DNS tools (Medium Priority)
     "dnsrecon": {
         "description": "DNS enumeration and reconnaissance",
-        "install": "sudo apt-get update && sudo apt-get install -y dnsrecon || pip3 install dnsrecon",
+        "install": "pipx install dnsrecon",
         "check_command": ["dnsrecon", "--help"],
         "python_module": "dnsrecon",
         "type": "python",
@@ -101,7 +101,7 @@ TOOLS = {
     # SSH tools (Medium Priority)
     "ssh-audit": {
         "description": "SSH server security auditing tool",
-        "install": "pip3 install ssh-audit",
+        "install": "pipx install ssh-audit",
         "check_command": ["ssh-audit", "--help"],
         "python_module": "ssh_audit",
         "type": "python",
@@ -120,7 +120,7 @@ TOOLS = {
     },
     "sslyze": {
         "description": "SSL/TLS configuration analyzer",
-        "install": "pip3 install sslyze",
+        "install": "pipx install sslyze",
         "check_command": ["sslyze", "--help"],
         "python_module": "sslyze",
         "type": "python",
@@ -141,7 +141,7 @@ TOOLS = {
     # SMB/NetBIOS tools (Medium Priority)
     "netexec": {
         "description": "Network execution and credential testing tool",
-        "install": "pip3 install netexec",
+        "install": "pipx install git+https://github.com/Pennyw0rth/NetExec",
         "check_command": ["netexec", "--help"],
         "python_module": "netexec",
         "type": "python",
@@ -262,7 +262,20 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
         print(f"[-] No install command available for {tool_name}")
         return False
     
-    # Replace pip with pip3 for better compatibility
+    # For Python tools, ensure pipx is installed first
+    if tool_info.get("type") == "python":
+        try:
+            pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
+            if pipx_check.returncode != 0:
+                print(f"    Installing pipx first...")
+                subprocess.run("sudo apt-get update && sudo apt-get install -y pipx", shell=True, capture_output=True)
+                subprocess.run("pipx ensurepath", shell=True, capture_output=True)
+        except:
+            print(f"    Installing pipx first...")
+            subprocess.run("sudo apt-get update && sudo apt-get install -y pipx", shell=True, capture_output=True)
+            subprocess.run("pipx ensurepath", shell=True, capture_output=True)
+    
+    # Replace pip with pip3 for better compatibility (fallback cases)
     if "pip install" in install_cmd:
         install_cmd = install_cmd.replace("pip install", "pip3 install")
     
@@ -276,8 +289,8 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
             print(f"[+] Successfully installed {tool_name}")
             return True
         else:
-            # Handle externally-managed Python environment
-            if "externally-managed-environment" in result.stderr and "pip3 install" in install_cmd:
+            # Handle externally-managed Python environment or pipx installation failure
+            if ("externally-managed-environment" in result.stderr and "pip3 install" in install_cmd) or (tool_info.get("type") == "python" and result.returncode != 0):
                 return _handle_python_package_install(tool_name, tool_info)
             
             # Handle permission denied for git clone to /opt
@@ -296,10 +309,35 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
 
 
 def _handle_python_package_install(tool_name: str, tool_info: Dict) -> bool:
-    """Handle Python package installation with externally-managed environment."""
-    print(f"[!] System Python is externally managed. Trying alternatives...")
+    """Handle Python package installation with fallback methods."""
+    print(f"[!] Primary installation failed. Trying alternatives...")
     
-    # Try system package first
+    # Try pipx first (if not already attempted)
+    install_cmd = tool_info.get("install", "")
+    if not install_cmd.startswith("pipx"):
+        print(f"    Trying pipx...")
+        try:
+            # First ensure pipx is installed
+            pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
+            if pipx_check.returncode != 0:
+                print(f"    Installing pipx...")
+                subprocess.run("sudo apt-get update && sudo apt-get install -y pipx", shell=True, capture_output=True)
+                subprocess.run("pipx ensurepath", shell=True, capture_output=True)
+            
+            # Use the exact install command if it contains git+, otherwise just the tool name
+            if "git+" in install_cmd:
+                pipx_cmd = install_cmd.replace("pip3 install", "pipx install")
+            else:
+                pipx_cmd = f"pipx install {tool_name}"
+            
+            result = subprocess.run(pipx_cmd, shell=True, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[+] Successfully installed {tool_name} via pipx")
+                return True
+        except:
+            pass
+    
+    # Try system package
     system_package = f"python3-{tool_name.replace('_', '-')}"
     print(f"    Trying system package: {system_package}")
     
@@ -310,22 +348,6 @@ def _handle_python_package_install(tool_name: str, tool_info: Dict) -> bool:
         )
         if result.returncode == 0:
             print(f"[+] Successfully installed {tool_name} via system package")
-            return True
-    except:
-        pass
-    
-    # Try pipx
-    print(f"    Trying pipx...")
-    try:
-        # First ensure pipx is installed
-        pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
-        if pipx_check.returncode != 0:
-            print(f"    Installing pipx...")
-            subprocess.run("sudo apt-get install -y pipx", shell=True, capture_output=True)
-        
-        result = subprocess.run(f"pipx install {tool_name}", shell=True, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"[+] Successfully installed {tool_name} via pipx")
             return True
     except:
         pass
@@ -345,8 +367,8 @@ def _handle_python_package_install(tool_name: str, tool_info: Dict) -> bool:
     
     print(f"[-] All installation methods failed for {tool_name}")
     print(f"    Manual options:")
-    print(f"    1. sudo apt install python3-{tool_name.replace('_', '-')}")
-    print(f"    2. pipx install {tool_name}")
+    print(f"    1. pipx install {tool_name}")
+    print(f"    2. sudo apt install python3-{tool_name.replace('_', '-')}")
     print(f"    3. python3 -m venv venv && source venv/bin/activate && pip install {tool_name}")
     return False
 
