@@ -4,20 +4,21 @@ AutoTest Security Tools Installation & Setup
 Linux-only security testing framework installation.
 
 NOTE: AutoTest is designed for Linux penetration testing environments only.
+IMPORTANT: This installer requires sudo privileges for system-wide tool installation.
 
 This comprehensive installer:
-1. Verifies Linux system compatibility 
+1. Verifies Linux system compatibility and administrative privileges
 2. Checks for required tools and prerequisites
-3. Installs missing tools via multiple methods:
-   - Linux package managers (apt, yum, dnf)
-   - Python packages with externally-managed environment handling
-   - Source compilation with fallback options
+3. Installs missing tools system-wide via multiple methods:
+   - Linux package managers (apt, yum, dnf) 
+   - Python packages with proper system integration
+   - Source compilation with system installation
 4. Handles modern Python environment restrictions (PEP 668)
 5. Provides interactive and automated installation modes
-6. Configures tool paths and system integration
+6. Installs tools to standard system paths (/usr/local/bin, /usr/bin)
 
 Usage:
-  python3 installation.py              # Interactive installation
+  sudo python3 installation.py         # System-wide installation (recommended)
   python3 installation.py --auto      # Automatic installation (no prompts)
   python3 installation.py --check     # Check tools only (no installation)
 """
@@ -112,7 +113,7 @@ TOOLS = {
     # SSL/TLS tools (Medium/Low Priority)
     "testssl.sh": {
         "description": "Comprehensive SSL/TLS testing suite",
-        "install": "sudo git clone https://github.com/drwetter/testssl.sh.git /opt/testssl.sh && sudo ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh || (git clone https://github.com/drwetter/testssl.sh.git ~/testssl.sh && mkdir -p ~/.local/bin && ln -sf ~/testssl.sh/testssl.sh ~/.local/bin/testssl.sh)",
+        "install": "git clone https://github.com/drwetter/testssl.sh.git /opt/testssl.sh && ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh",
         "check_command": ["testssl.sh", "--version"],
         "type": "script",
         "priority": "medium",
@@ -183,11 +184,11 @@ def get_python_scripts_dir() -> Optional[Path]:
     except:
         pass
     
-    # Check common locations
+    # Check system locations (running with sudo, so prioritize system paths)
     common_paths = [
-        Path.home() / ".local" / "bin",
         Path("/usr/local/bin"),
-        Path("/usr/bin")
+        Path("/usr/bin"),
+        Path("/opt/*/bin"),  # For tools installed in /opt
     ]
     
     for path in common_paths:
@@ -202,6 +203,31 @@ def check_linux_system():
     if os.name != 'posix':
         print("[-] ERROR: AutoTest requires a Linux system.")
         print("    Windows and macOS are not supported.")
+        sys.exit(1)
+
+
+def check_administrative_privileges():
+    """Verify we're running with administrative privileges for system-wide installation."""
+    if os.geteuid() != 0:
+        print()
+        print("🔐 [PRIVILEGE REQUIRED] AutoTest Installation")
+        print("=" * 50)
+        print()
+        print("AutoTest requires administrative privileges for system-wide tool installation.")
+        print("This ensures all security tools work properly with both user and sudo execution.")
+        print()
+        print("Why sudo is required:")
+        print("  • Install tools to system-wide paths (/usr/local/bin)")
+        print("  • Enable masscan raw socket capabilities") 
+        print("  • Ensure tools work consistently across privilege levels")
+        print("  • Follow security tool installation best practices")
+        print()
+        print("Please restart the installation with:")
+        print("  sudo python3 installation.py")
+        print()
+        print("This architectural design eliminates privilege mismatches and")
+        print("ensures reliable operation for all AutoTest functionality.")
+        print()
         sys.exit(1)
 
 
@@ -356,30 +382,12 @@ def _handle_python_package_install(tool_name: str, tool_info: Dict) -> bool:
 
 
 def _handle_opt_install(tool_name: str, install_cmd: str) -> bool:
-    """Handle installations that need /opt access by using user directory."""
-    print(f"[!] Permission denied to /opt. Installing to user directory...")
-    
-    if "testssl.sh" in tool_name:
-        # Install testssl.sh to user's home directory
-        user_install_cmd = install_cmd.replace("/opt/testssl.sh", f"{Path.home()}/testssl.sh")
-        user_install_cmd = user_install_cmd.replace("/usr/local/bin/testssl.sh", f"{Path.home()}/.local/bin/testssl.sh")
-        
-        # Ensure .local/bin exists
-        local_bin = Path.home() / ".local" / "bin"
-        local_bin.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            result = subprocess.run(user_install_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode == 0:
-                print(f"[+] Successfully installed {tool_name} to user directory")
-                print(f"    Location: {Path.home()}/testssl.sh")
-                print(f"    Symlink: {local_bin}/testssl.sh")
-                return True
-        except:
-            pass
-    
-    print(f"[-] Failed to install {tool_name} to user directory")
-    print(f"    Try running with sudo for system-wide installation")
+    """Handle installations that need /opt access - should work with sudo privileges."""
+    print(f"[!] Unexpected permission denied to /opt even with sudo privileges.")
+    print(f"    This may indicate a system configuration issue or SELinux restrictions.")
+    print(f"    Tool: {tool_name}")
+    print(f"    Command attempted: {install_cmd}")
+    print(f"    You may need to manually create /opt directory or check system policies.")
     return False
 
 
@@ -560,6 +568,9 @@ def main():
     
     # Verify Linux system
     check_linux_system()
+    
+    # Check for administrative privileges
+    check_administrative_privileges()
     
     print(f"System: {os.uname().sysname} {os.uname().release}")
     print(f"Python: {sys.version}")

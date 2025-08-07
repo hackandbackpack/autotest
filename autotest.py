@@ -587,37 +587,9 @@ def _check_privilege_requirements() -> None:
         import time
         time.sleep(2)
     
-    # If running as root, verify tool paths are accessible and handle path issues
+    # If running as root, all system-installed tools should be accessible
     if is_root:
         console.print("[green]✓[/green] Running with elevated privileges - full tool functionality available")
-        _ensure_tool_paths_for_sudo()
-
-
-def _ensure_tool_paths_for_sudo() -> None:
-    """
-    Ensure tool paths are accessible when running with sudo.
-    Adds common user installation paths to the system PATH.
-    """
-    import os
-    
-    # Get the original user's home directory (even when running with sudo)
-    original_user = os.environ.get('SUDO_USER')
-    if original_user:
-        # Common user installation paths
-        user_paths = [
-            f"/home/{original_user}/.local/bin",
-            f"/home/{original_user}/go/bin",
-            f"/home/{original_user}/.cargo/bin",
-            "/opt/go/bin",
-            "/usr/local/go/bin"
-        ]
-        
-        # Add to PATH if not already present
-        current_path = os.environ.get('PATH', '')
-        for user_path in user_paths:
-            if user_path not in current_path and os.path.exists(user_path):
-                os.environ['PATH'] = f"{current_path}:{user_path}"
-                logging.debug(f"Added to PATH: {user_path}")
 
 
 def _is_likely_file_path(target: str) -> bool:
