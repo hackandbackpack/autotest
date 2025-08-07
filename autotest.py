@@ -90,13 +90,69 @@ class AutoTest:
         
         # Shutdown handling
         self.shutdown_event = threading.Event()
+        self._shutdown_requested = False
+        self._shutdown_count = 0
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals."""
-        logging.info("Shutdown signal received")
-        self.shutdown()
+        """Handle shutdown signals with escalating force."""
+        self._shutdown_count += 1
+        
+        if self._shutdown_count == 1:
+            logging.info("Shutdown signal received - initiating graceful shutdown...")
+            self._shutdown_requested = True
+            # Start graceful shutdown in background thread to avoid blocking signal handler
+            shutdown_thread = threading.Thread(target=self._graceful_shutdown, daemon=True)
+            shutdown_thread.start()
+            
+        elif self._shutdown_count == 2:
+            logging.warning("Second shutdown signal - forcing immediate shutdown...")
+            self._force_shutdown()
+            
+        else:
+            logging.error("Multiple shutdown signals - forcing process termination!")
+            import os
+            os._exit(1)
+    
+    def _graceful_shutdown(self):
+        """Perform graceful shutdown with timeout."""
+        try:
+            # Set a timeout for graceful shutdown
+            timeout_thread = threading.Timer(10.0, self._force_shutdown)
+            timeout_thread.daemon = True
+            timeout_thread.start()
+            
+            # Try normal shutdown
+            self.shutdown()
+            
+            # Cancel timeout if we succeeded
+            timeout_thread.cancel()
+            
+        except Exception as e:
+            logging.error(f"Graceful shutdown failed: {e}")
+            self._force_shutdown()
+    
+    def _force_shutdown(self):
+        """Force immediate application termination."""
+        logging.warning("Forcing immediate shutdown...")
+        
+        try:
+            # Force stop everything
+            if self.discovery:
+                self.discovery.shutdown()
+            
+            if self.task_manager:
+                self.task_manager.stop(wait=False, timeout=2.0)
+            
+            self.shutdown_event.set()
+            
+        except Exception as e:
+            logging.error(f"Force shutdown error: {e}")
+        finally:
+            # Give a brief moment for cleanup, then exit
+            import os
+            threading.Timer(2.0, lambda: os._exit(0)).start()
     
     def load_plugins(self) -> None:
         """Dynamically load all available plugins from the plugins directory."""
@@ -465,13 +521,23 @@ class AutoTest:
         """Shutdown the application cleanly."""
         logging.info("Shutting down AutoTest...")
         
-        if self.discovery:
-            self.discovery.shutdown()
+        try:
+            if self.discovery:
+                self.discovery.shutdown()
+                
+            if self.task_manager and self.task_manager.running:
+                # Use graceful shutdown with timeout
+                self.task_manager.stop(wait=True, timeout=5.0)
             
-        if self.task_manager and self.task_manager.running:
-            self.task_manager.stop()
-        
-        self.shutdown_event.set()
+            self.shutdown_event.set()
+            logging.info("AutoTest shutdown completed")
+            
+        except Exception as e:
+            logging.error(f"Error during shutdown: {e}")
+            # Force shutdown on error
+            if self.task_manager:
+                self.task_manager.stop(wait=False)
+            self.shutdown_event.set()
 
 
 def _is_likely_file_path(target: str) -> bool:

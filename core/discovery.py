@@ -96,11 +96,16 @@ class Discovery:
             port_list = list(range(1, 65536))
             use_masscan = True
             
-        # Memory usage warning for large scans
-        estimated_memory_mb = (len(targets) * len(port_list) * 0.001)  # Rough estimate
-        if estimated_memory_mb > 1000:  # > 1GB estimated
-            logging.warning(f"Large scan detected: {len(targets)} hosts × {len(port_list)} ports")
-            logging.warning(f"Estimated memory usage: ~{estimated_memory_mb:.0f}MB - using masscan for efficiency")
+        # Memory usage estimation for scan planning
+        if use_masscan:
+            estimated_memory_mb = 150  # Masscan uses constant memory regardless of scale
+            logging.info(f"Using masscan for {len(targets)} hosts × {len(port_list)} ports (est. memory: ~{estimated_memory_mb}MB)")
+        else:
+            # Threaded scanning: base memory + thread overhead + minimal socket buffers
+            estimated_memory_mb = 100 + (self.max_threads * 8) + min(len(port_list) * 0.1, 50)
+            if len(targets) * len(port_list) > 50000:  # Large scan threshold
+                logging.warning(f"Large threaded scan: {len(targets)} hosts × {len(port_list)} ports")
+                logging.warning(f"Estimated memory usage: ~{estimated_memory_mb:.0f}MB - consider using masscan for better performance")
         logging.info(f"Starting host discovery on {total} targets...")
         logging.info(f"Using {self.max_threads} concurrent threads")
         
@@ -235,8 +240,12 @@ class Discovery:
         return discovered_hosts
     
     def shutdown(self):
-        """Signal shutdown to stop discovery."""
+        """Signal shutdown to stop discovery and cancel operations."""
+        logging.info("Discovery shutdown requested")
         self._shutdown = True
+        
+        # Additional cleanup could be added here if needed
+        # For example, forcefully canceling any running subprocess operations
     
     def scan_port(self, host: str, port: int, timeout: Optional[float] = None) -> bool:
         """
@@ -624,9 +633,10 @@ class Discovery:
                 'masscan',
                 '-iL', hosts_file_path,
                 '-p', port_spec,
-                '--rate', '1000',  # Conservative rate to avoid overwhelming targets
+                '--rate', '15000',  # User's preferred rate
                 '-oJ', output_file_path,
-                '--wait', '3'  # Wait for late packets
+                '--wait', '3',  # Wait for late packets
+                '--open-only'  # Only report open ports
             ]
             
             logging.info(f"Running masscan: {' '.join(masscan_cmd[:6])}... (truncated)")
@@ -640,7 +650,11 @@ class Discovery:
             )
             
             if result.returncode != 0:
-                logging.error(f"Masscan failed: {result.stderr}")
+                if "permission denied" in result.stderr.lower() or "need to sudo" in result.stderr.lower():
+                    logging.warning("Masscan requires elevated privileges - falling back to threaded scanning")
+                    logging.info("Hint: Run with sudo for masscan support, or use smaller port ranges for threaded scanning")
+                else:
+                    logging.error(f"Masscan failed: {result.stderr}")
                 # Fall back to regular scanning
                 logging.info("Falling back to regular port scanning...")
                 return self._fallback_port_scan(hosts, port_list)

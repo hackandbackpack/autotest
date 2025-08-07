@@ -165,17 +165,22 @@ class TaskManager:
         scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
         scheduler_thread.start()
     
-    def stop(self, wait: bool = True) -> None:
+    def stop(self, wait: bool = False, timeout: float = 5.0) -> None:
         """
-        Stop the task manager.
+        Stop the task manager with graceful shutdown.
         
         Args:
-            wait: Whether to wait for running tasks to complete
+            wait: Whether to wait for running tasks to complete (default: False for fast shutdown)
+            timeout: Maximum time to wait for graceful shutdown before forcing
         """
+        logging.info(f"TaskManager stopping - wait={wait}, timeout={timeout}s")
         self.stop_event.set()
         self._monitor_stop_event.set()
+        
+        # Stop resource monitor with timeout
         if self._resource_monitor_thread:
             self._resource_monitor_thread.join(timeout=2)
+            
         self.running = False
         
         # Update end time in stats
@@ -183,31 +188,51 @@ class TaskManager:
         self.stats['end_time'] = time.time()
         
         if self.executor:
+            # Always cancel pending futures immediately
+            with self.lock:
+                cancelled_count = 0
+                for future in self.futures.values():
+                    if future.cancel():
+                        cancelled_count += 1
+                logging.info(f"Cancelled {cancelled_count} pending tasks")
+            
             if wait:
-                # Cancel pending futures
-                with self.lock:
-                    for future in self.futures.values():
+                # Graceful shutdown with timeout
+                logging.info(f"Graceful shutdown: waiting up to {timeout}s for running tasks...")
+                try:
+                    self.executor.shutdown(wait=True, timeout=timeout)
+                    logging.info("Graceful shutdown completed")
+                except Exception as e:
+                    logging.warning(f"Graceful shutdown timeout, forcing shutdown: {e}")
+                    # Force shutdown
+                    for future in list(self.futures.values()):
                         future.cancel()
-                
-                self.executor.shutdown(wait=True)
+                    self.executor.shutdown(wait=False)
             else:
+                # Fast shutdown - don't wait
+                logging.info("Fast shutdown: terminating immediately")
                 self.executor.shutdown(wait=False)
             
             self.executor = None
     
     def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
         """
-        Wait for all tasks to complete.
+        Wait for all tasks to complete or shutdown signal.
         
         Args:
             timeout: Maximum time to wait (None for no timeout)
             
         Returns:
-            True if all tasks completed, False if timeout occurred
+            True if all tasks completed, False if timeout occurred or shutdown requested
         """
         start_time = time.time()
         
         while True:
+            # Check for shutdown signal first (highest priority)
+            if self.stop_event.is_set():
+                logging.info("Shutdown requested - stopping task wait")
+                return False
+            
             with self.lock:
                 # Check if all tasks are done
                 all_done = all(
