@@ -540,6 +540,86 @@ class AutoTest:
             self.shutdown_event.set()
 
 
+def _check_privilege_requirements() -> None:
+    """
+    Check if the current user has necessary privileges for certain tools.
+    Provide clear guidance when elevated privileges are needed.
+    """
+    import os
+    import shutil
+    from rich.console import Console
+    
+    console = Console()
+    
+    # Check if running as root/sudo
+    is_root = os.geteuid() == 0 if hasattr(os, 'geteuid') else False
+    
+    # Tools that require elevated privileges
+    privileged_tools = {
+        'masscan': 'Raw socket access for high-speed port scanning',
+        'nmap': 'Some advanced scanning features (SYN scan, OS detection)',
+    }
+    
+    # Check which privileged tools are available
+    available_privileged_tools = []
+    for tool in privileged_tools:
+        if shutil.which(tool):
+            available_privileged_tools.append(tool)
+    
+    # If we have privileged tools but not running as root
+    if available_privileged_tools and not is_root:
+        console.print()
+        console.print("[yellow]⚠ Privilege Notice:[/yellow]")
+        console.print(f"AutoTest detected the following tools that benefit from elevated privileges:")
+        
+        for tool in available_privileged_tools:
+            purpose = privileged_tools.get(tool, 'Enhanced scanning capabilities')
+            console.print(f"  • [cyan]{tool}[/cyan] - {purpose}")
+        
+        console.print()
+        console.print("[yellow]Recommendations:[/yellow]")
+        console.print("  • [green]For full functionality:[/green] Run with [bold]sudo python3 autotest.py[/bold]")
+        console.print("  • [blue]For basic scanning:[/blue] Continue without sudo (some features limited)")
+        console.print("  • [dim]Large port ranges will use slower threaded scanning instead of masscan[/dim]")
+        console.print()
+        
+        # Brief pause to let user read the message
+        import time
+        time.sleep(2)
+    
+    # If running as root, verify tool paths are accessible and handle path issues
+    if is_root:
+        console.print("[green]✓[/green] Running with elevated privileges - full tool functionality available")
+        _ensure_tool_paths_for_sudo()
+
+
+def _ensure_tool_paths_for_sudo() -> None:
+    """
+    Ensure tool paths are accessible when running with sudo.
+    Adds common user installation paths to the system PATH.
+    """
+    import os
+    
+    # Get the original user's home directory (even when running with sudo)
+    original_user = os.environ.get('SUDO_USER')
+    if original_user:
+        # Common user installation paths
+        user_paths = [
+            f"/home/{original_user}/.local/bin",
+            f"/home/{original_user}/go/bin",
+            f"/home/{original_user}/.cargo/bin",
+            "/opt/go/bin",
+            "/usr/local/go/bin"
+        ]
+        
+        # Add to PATH if not already present
+        current_path = os.environ.get('PATH', '')
+        for user_path in user_paths:
+            if user_path not in current_path and os.path.exists(user_path):
+                os.environ['PATH'] = f"{current_path}:{user_path}"
+                logging.debug(f"Added to PATH: {user_path}")
+
+
 def _is_likely_file_path(target: str) -> bool:
     """
     Determine if a target string is likely a file path.
@@ -597,6 +677,7 @@ def _is_likely_file_path(target: str) -> bool:
 @click.option('--check-tools', is_flag=True, help='Check all required tools and exit')
 @click.option('--setup', is_flag=True, help='Run interactive setup to install missing tools')
 @click.option('--auth-test', is_flag=True, help='Enable authentication testing (hydra, ncrack) - REQUIRES PROPER AUTHORIZATION')
+@click.option('--skip-privilege-check', is_flag=True, help='Skip privilege requirements check')
 def main(
     targets: tuple,
     config: Optional[str],
@@ -609,7 +690,8 @@ def main(
     skip_tool_check: bool,
     check_tools: bool,
     setup: bool,
-    auth_test: bool
+    auth_test: bool,
+    skip_privilege_check: bool
 ):
     """
     AutoTest - Automated Network Penetration Testing Framework
@@ -642,6 +724,10 @@ def main(
     """
     # Setup initial logging
     setup_logging(log_level)
+    
+    # Check for privilege requirements unless skipped
+    if not skip_privilege_check:
+        _check_privilege_requirements()
     
     try:
         # Initialize AutoTest
