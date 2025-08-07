@@ -141,7 +141,7 @@ class Playbook:
                     data['post_process']['deduplication']
                 )
                 
-            logger.info(f"Loaded playbook '{playbook.name}' with {len(playbook.services)} service types")
+            logger.debug(f"Loaded playbook '{playbook.name}' with {len(playbook.services)} service types")
             return playbook
             
         except Exception as e:
@@ -302,7 +302,6 @@ class PlaybookManager:
         try:
             if self.playbook_path.exists():
                 playbook = Playbook.from_yaml(self.playbook_path)
-                logging.info(f"Loaded playbook from: {self.playbook_path}")
                 return playbook
             else:
                 # Create default playbook if none exists

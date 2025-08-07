@@ -253,9 +253,6 @@ class AutoTest:
         playbook = playbook_manager.load_playbook()
         
         logging.info(f"Using playbook: {playbook.name} v{playbook.version}")
-        if playbook.description:
-            logging.info(f"Description: {playbook.description}")
-        logging.info(f"Playbook location: {playbook_manager.get_playbook_path()}")
         
         # Validate playbook
         issues = playbook.validate()

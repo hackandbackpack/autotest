@@ -248,7 +248,7 @@ class NetExecExecutor(ToolExecutor):
                 
                 if found_indicators >= 2:
                     self.tool_path = cmd
-                    logger.info(f"Found netexec as '{cmd}'")
+                    logger.debug(f"Found netexec as '{cmd}'")
                     return cmd
                     
             except (FileNotFoundError, subprocess.TimeoutExpired):

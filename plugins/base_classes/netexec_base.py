@@ -24,6 +24,9 @@ class NetExecPlugin(Plugin):
     Provides common functionality for tool detection, command building, and output parsing.
     """
     
+    # Class-level cache for NetExec executor to avoid duplicate detection
+    _netexec_executor = None
+    
     def __init__(self, protocol: str, default_port: int):
         """
         Initialize NetExec plugin.
@@ -37,8 +40,11 @@ class NetExecPlugin(Plugin):
         self.default_port = default_port
         self.required_tools = ["netexec"]
         
-        # Initialize NetExec executor
-        self.netexec_executor = NetExecExecutor()
+        # Use cached NetExec executor or create new one
+        if NetExecPlugin._netexec_executor is None:
+            NetExecPlugin._netexec_executor = NetExecExecutor()
+        
+        self.netexec_executor = NetExecPlugin._netexec_executor
         self.netexec_path = self.netexec_executor.tool_path or "netexec"
     
     def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:

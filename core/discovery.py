@@ -101,8 +101,6 @@ class Discovery:
         if estimated_memory_mb > 1000:  # > 1GB estimated
             logging.warning(f"Large scan detected: {len(targets)} hosts × {len(port_list)} ports")
             logging.warning(f"Estimated memory usage: ~{estimated_memory_mb:.0f}MB - using masscan for efficiency")
-        
-        import logging
         logging.info(f"Starting host discovery on {total} targets...")
         logging.info(f"Using {self.max_threads} concurrent threads")
         
