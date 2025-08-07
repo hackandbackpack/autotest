@@ -262,18 +262,7 @@ def install_tool(tool_name: str, tool_info: Dict) -> bool:
         print(f"[-] No install command available for {tool_name}")
         return False
     
-    # For Python tools, ensure pipx is installed first
-    if tool_info.get("type") == "python":
-        try:
-            pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
-            if pipx_check.returncode != 0:
-                print(f"    Installing pipx first...")
-                subprocess.run("sudo apt-get update && sudo apt-get install -y pipx", shell=True, capture_output=True)
-                subprocess.run("pipx ensurepath", shell=True, capture_output=True)
-        except:
-            print(f"    Installing pipx first...")
-            subprocess.run("sudo apt-get update && sudo apt-get install -y pipx", shell=True, capture_output=True)
-            subprocess.run("pipx ensurepath", shell=True, capture_output=True)
+    # pipx is now ensured to be available from prerequisites check
     
     # Replace pip with pip3 for better compatibility (fallback cases)
     if "pip install" in install_cmd:
@@ -317,13 +306,6 @@ def _handle_python_package_install(tool_name: str, tool_info: Dict) -> bool:
     if not install_cmd.startswith("pipx"):
         print(f"    Trying pipx...")
         try:
-            # First ensure pipx is installed
-            pipx_check = subprocess.run(["pipx", "--version"], capture_output=True)
-            if pipx_check.returncode != 0:
-                print(f"    Installing pipx...")
-                subprocess.run("sudo apt-get update && sudo apt-get install -y pipx", shell=True, capture_output=True)
-                subprocess.run("pipx ensurepath", shell=True, capture_output=True)
-            
             # Use the exact install command if it contains git+, otherwise just the tool name
             if "git+" in install_cmd:
                 pipx_cmd = install_cmd.replace("pip3 install", "pipx install")
@@ -401,6 +383,30 @@ def _handle_opt_install(tool_name: str, install_cmd: str) -> bool:
     return False
 
 
+def _install_pipx() -> bool:
+    """Install pipx and configure PATH."""
+    try:
+        print("    Installing pipx...")
+        result = subprocess.run(
+            "sudo apt-get update && sudo apt-get install -y pipx",
+            shell=True, capture_output=True, text=True
+        )
+        
+        if result.returncode == 0:
+            # Configure pipx PATH
+            print("    Configuring pipx PATH...")
+            subprocess.run("pipx ensurepath", shell=True, capture_output=True)
+            print("[+] pipx: Successfully installed and configured")
+            return True
+        else:
+            print("[-] pipx: Failed to install via apt")
+            print("    Please install manually: sudo apt install pipx")
+            return False
+    except Exception as e:
+        print(f"[-] pipx: Installation failed - {e}")
+        return False
+
+
 def check_prerequisites():
     """Check for Linux prerequisites."""
     print("[*] Checking Linux prerequisites...")
@@ -410,7 +416,8 @@ def check_prerequisites():
         "pip3": [sys.executable, "-m", "pip", "--version"],
         "git": ["git", "--version"],
         "make": ["make", "--version"],
-        "gcc": ["gcc", "--version"]
+        "gcc": ["gcc", "--version"],
+        "pipx": ["pipx", "--version"]
     }
     
     missing = []
@@ -425,6 +432,9 @@ def check_prerequisites():
                 if name in ["make", "gcc"]:
                     optional_missing.append(name)
                     print(f"[!] {name}: Not working (optional for compiling)")
+                elif name == "pipx":
+                    print(f"[-] {name}: Not working - installing automatically...")
+                    _install_pipx()
                 else:
                     missing.append(name)
                     print(f"[-] {name}: Not working")
@@ -432,6 +442,9 @@ def check_prerequisites():
             if name in ["make", "gcc"]:
                 optional_missing.append(name)
                 print(f"[!] {name}: Not found (optional for compiling)")
+            elif name == "pipx":
+                print(f"[-] {name}: Not found - installing automatically...")
+                _install_pipx()
             else:
                 missing.append(name)
                 print(f"[-] {name}: Not found")
