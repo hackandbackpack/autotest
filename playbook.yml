@@ -1,0 +1,156 @@
+# AutoTest Security Testing Playbook
+#
+# This file defines the commands that AutoTest will run for each service discovered.
+# You can customize this file to add your own commands or modify existing ones.
+#
+# To create a custom version:
+# 1. Copy this file to ~/.autotest/playbook.yml
+# 2. Edit the copy with your preferred commands and settings
+# 3. AutoTest will automatically use your custom version
+#
+# Variables available for substitution:
+# - {target}      : The target IP/hostname
+# - {port}        : The port number
+# - {service}     : The detected service name
+# - {protocol}    : http or https
+# - {output_dir}  : Output directory for results
+# - {timestamp}   : Current timestamp
+# - {scan_id}     : Unique scan identifier
+#
+name: "AutoTest Security Testing Playbook"
+description: "Default security testing commands for AutoTest - customize as needed"
+version: "1.0"
+
+# Global settings
+settings:
+  timeout: 600
+  max_parallel: 10
+  output_format: ["json", "txt"]
+
+# Service-specific commands
+# 
+# You can add new services or modify existing ones.
+# Each command can specify:
+# - name: Unique identifier for the command
+# - command: The actual command to run (with variable substitution)
+# - enabled: true/false to enable/disable the command
+# - priority: high/medium/low for execution priority
+# - timeout: Maximum time to wait for command completion (seconds)
+# - requires: List of tools that must be available
+# - auth_required: true if command requires authentication testing to be enabled
+# - description: Human-readable description of what the command does
+#
+# Example of adding a custom command:
+#   custom-scanner:
+#     - name: "my-custom-scan"
+#       command: "my-tool -t {target} -p {port} -o {output_dir}/custom_{target}_{port}.txt"
+#       enabled: true
+#       priority: medium
+#       timeout: 300
+#       description: "My custom security scan"
+#
+services:
+  http:
+    - name: "nikto-standard"
+      command: "nikto -h {protocol}://{target}:{port} -output {output_dir}/nikto_{target}_{port}.txt -Format txt"
+      enabled: true
+      priority: high
+      timeout: 300
+      description: "Standard Nikto web vulnerability scan"
+      
+    - name: "whatweb-fingerprint"
+      command: "whatweb --color=never --no-errors -a 1 {protocol}://{target}:{port} --log-json {output_dir}/whatweb_{target}_{port}.json"
+      enabled: true
+      priority: medium
+      timeout: 120
+      description: "Web application fingerprinting"
+      
+    - name: "gobuster-directories"
+      command: "gobuster dir -u {protocol}://{target}:{port} -w {wordlist} -o {output_dir}/gobuster_{target}_{port}.txt -q"
+      enabled: true
+      priority: high
+      timeout: 600
+      requires: ["gobuster"]
+      description: "Directory and file enumeration"
+
+  https:
+    - name: "nikto-ssl"
+      command: "nikto -h https://{target}:{port} -ssl -output {output_dir}/nikto_ssl_{target}_{port}.txt -Format txt"
+      enabled: true
+      priority: high
+      timeout: 300
+      description: "Nikto scan with SSL support"
+      
+    - name: "testssl-comprehensive"
+      command: "testssl.sh --jsonfile {output_dir}/testssl_{target}_{port}.json --logfile {output_dir}/testssl_{target}_{port}.txt --quiet --color 0 {target}:{port}"
+      enabled: true
+      priority: high
+      timeout: 600
+      requires: ["testssl.sh"]
+      description: "Comprehensive SSL/TLS security assessment"
+
+  ssh:
+    - name: "ssh-audit"
+      command: "ssh-audit --json {target}:{port} > {output_dir}/ssh_audit_{target}_{port}.json"
+      enabled: true
+      priority: high
+      timeout: 60
+      description: "SSH server security audit"
+
+  smb:
+    - name: "netexec-shares"
+      command: "netexec smb {target} --shares -u '' -p '' --timeout 10"
+      enabled: true
+      priority: high
+      timeout: 120
+      description: "SMB share enumeration (anonymous)"
+      
+    - name: "netexec-auth-test"
+      command: "netexec smb {target} -u {username_list} -p {password_list} --timeout 5 --continue-on-success"
+      enabled: true
+      priority: medium
+      timeout: 600
+      auth_required: true
+      description: "SMB authentication testing"
+
+  rdp:
+    - name: "netexec-rdp-check"
+      command: "netexec rdp {target} -u '' -p '' --timeout 10"
+      enabled: true  
+      priority: medium
+      timeout: 60
+      description: "RDP service enumeration"
+
+  ftp:
+    - name: "netexec-ftp-anon"
+      command: "netexec ftp {target} -u anonymous -p '' --timeout 10"
+      enabled: true
+      priority: medium
+      timeout: 60
+      description: "FTP anonymous access check"
+
+  dns:
+    - name: "dnsrecon-standard"
+      command: "dnsrecon -d {target} -j {output_dir}/dnsrecon_{target}.json"
+      enabled: true
+      priority: medium
+      timeout: 120
+      description: "DNS reconnaissance and enumeration"
+
+# Variables for command substitution
+variables:
+  wordlist: "/usr/share/wordlists/dirb/common.txt"
+  big_wordlist: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+  username_list: "/usr/share/wordlists/metasploit/unix_users.txt"
+  password_list: "/usr/share/wordlists/rockyou.txt"
+
+# Post-processing configuration
+post_process:
+  deduplication:
+    enabled: true
+    fields: ["vulnerability", "endpoint", "severity"]
+    merge_strategy: "highest_severity"
+  
+  reporting:
+    formats: ["json", "html", "csv"]
+    include_raw: true

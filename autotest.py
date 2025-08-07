@@ -23,6 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__ if "__file__" in glo
 from core.config import Config
 from core.exceptions import AutoTestException
 from core.input_parser import InputParser
+from core.playbook import PlaybookManager, PlaybookError
+from core.result_deduplicator import ResultDeduplicator
 from core.discovery import Discovery
 from core.task_manager import TaskManager, Task, TaskStatus
 from core.output import OutputManager
@@ -138,10 +140,8 @@ class AutoTest:
                                     plugin_instance = attr()
                                     plugin_instance.output_manager = self.output_manager
                                     self.plugins.append(plugin_instance)
-                                    logging.info(f"Loaded plugin: {attr_name} from {module_path}")
                                     plugins_loaded += 1
                                 except Exception as e:
-                                    logging.warning(f"Failed to instantiate {attr_name}: {e}")
                                     plugins_failed.append(f"{attr_name}: {str(e)}")
                     
                     except ImportError as e:
@@ -157,7 +157,37 @@ class AutoTest:
                 logging.error(f"Error scanning plugin directory {plugin_dir}: {e}")
         
         if plugins_failed:
-            logging.warning(f"Failed to load {len(plugins_failed)} plugin(s): {', '.join(plugins_failed)}")
+            # Show errors and handle based on environment
+            from rich.console import Console
+            import os
+            console = Console()
+            
+            console.print(f"\n[red]Failed to load {len(plugins_failed)} plugin(s):[/red]")
+            for failed in plugins_failed:
+                console.print(f"  [red]• {failed}[/red]")
+            
+            # Check for automation environment variables
+            skip_errors = os.getenv('AUTOTEST_SKIP_PLUGIN_ERRORS', '').lower() in ['true', '1', 'yes']
+            non_interactive = os.getenv('AUTOTEST_NON_INTERACTIVE', '').lower() in ['true', '1', 'yes']
+            
+            if skip_errors:
+                console.print(f"[yellow]AUTOTEST_SKIP_PLUGIN_ERRORS=true - Auto-skipping failed plugins...[/yellow]")
+                choice = 'y'
+            elif non_interactive:
+                console.print(f"[red]AUTOTEST_NON_INTERACTIVE=true - Cannot prompt user. Set AUTOTEST_SKIP_PLUGIN_ERRORS=true to auto-skip.[/red]")
+                raise AutoTestException("Plugin errors in non-interactive mode. Set AUTOTEST_SKIP_PLUGIN_ERRORS=true to continue.")
+            else:
+                console.print("\n[yellow]Options:[/yellow]")
+                console.print("  [green]y[/green] - Skip failed plugins and continue")
+                console.print("  [red]n[/red] - Cancel to fix errors")
+                console.print("  [dim]Tip: Set AUTOTEST_SKIP_PLUGIN_ERRORS=true to auto-skip in scripts[/dim]")
+                
+                choice = self._prompt_with_timeout("\nSkip failed plugins and continue? (y/n): ", timeout=30, default='n')
+            
+            if choice != 'y':
+                raise AutoTestException("Scan cancelled due to plugin errors. Please fix the issues and try again.")
+            
+            console.print(f"[yellow]Continuing with {plugins_loaded} working plugins...[/yellow]")
         
         if plugins_loaded == 0:
             logging.error("No plugins loaded!")
@@ -165,17 +195,72 @@ class AutoTest:
         
         logging.info(f"Successfully loaded {plugins_loaded} plugin(s)")
     
+    def _prompt_with_timeout(self, prompt: str, timeout: int = 30, default: str = 'n') -> str:
+        """
+        Prompt user with timeout for automation compatibility.
+        
+        Args:
+            prompt: Prompt text to display
+            timeout: Timeout in seconds
+            default: Default response if timeout
+            
+        Returns:
+            User input or default
+        """
+        import signal
+        import sys
+        
+        def timeout_handler(signum, frame):
+            print(f"\n[Timeout after {timeout}s - using default: {default}]")
+            return default
+        
+        try:
+            # Set timeout handler (Unix only)
+            if hasattr(signal, 'SIGALRM'):
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(timeout)
+            
+            choice = input(prompt).strip().lower()
+            
+            # Cancel timeout
+            if hasattr(signal, 'SIGALRM'):
+                signal.alarm(0)
+                
+            return choice
+            
+        except (KeyboardInterrupt, EOFError):
+            print(f"\n[Interrupted - using default: {default}]")
+            return default
+        except:
+            # Timeout or other error
+            return default
+    
     # Note: Plugin task execution is now handled within TaskManager
     # by providing a closure function when creating tasks
     
     def run_scan(
         self,
         targets: List[str],
-        ports: Optional[str] = None
+        ports: Optional[str] = None,
+        auth_test: bool = False
     ) -> None:
         """Run the main scanning workflow."""
         start_time = get_timestamp()
         logging.info(f"Starting AutoTest scan at {start_time}")
+        
+        # Load playbook
+        playbook_manager = PlaybookManager()
+        playbook = playbook_manager.load_playbook()
+        
+        logging.info(f"Using playbook: {playbook.name} v{playbook.version}")
+        if playbook.description:
+            logging.info(f"Description: {playbook.description}")
+        logging.info(f"Playbook location: {playbook_manager.get_playbook_path()}")
+        
+        # Validate playbook
+        issues = playbook.validate()
+        if issues:
+            logging.warning(f"Playbook validation issues: {issues}")
         
         # Create output directory
         timestamp = get_timestamp()
@@ -221,11 +306,16 @@ class AutoTest:
             # Initialize task manager
             self.task_manager = TaskManager(max_workers=self.config.get('max_threads', 10))
             
-            # Create tasks from discovery results with plugin executor
-            # Pass the AutoTest instance so tasks can access execute_plugin_task
+            # Create tasks from discovery results using playbook
             self.task_manager.autotest_instance = self
             self.task_manager.auth_test_enabled = auth_test
-            self.task_manager.create_tasks_from_discovery(discovered_hosts, self.plugins, ports)
+            
+            # Initialize result deduplicator
+            deduplicator = ResultDeduplicator(playbook.deduplication)
+            self.task_manager.result_deduplicator = deduplicator
+            
+            # Create tasks from playbook instead of plugins
+            self.task_manager.create_tasks_from_playbook(discovered_hosts, playbook, ports)
             
             # TUI support removed for simplification
             
@@ -242,8 +332,30 @@ class AutoTest:
             if not completed:
                 logging.warning("Scan timed out or was interrupted")
             
-            # Phase 3: Reporting
-            logging.info("Phase 3: Generating reports")
+            # Phase 3: Results Export and Reporting
+            logging.info("Phase 3: Exporting results and generating reports")
+            
+            # Export deduplicated results if available
+            if hasattr(self.task_manager, 'result_deduplicator') and self.task_manager.result_deduplicator:
+                try:
+                    # Export to multiple formats
+                    export_base = output_dir / "deduplicated_results"
+                    json_path = self.task_manager.result_deduplicator.export_json(str(export_base) + ".json")
+                    csv_path = self.task_manager.result_deduplicator.export_csv(str(export_base) + ".csv")
+                    html_path = self.task_manager.result_deduplicator.export_html(str(export_base) + ".html")
+                    
+                    logging.info(f"Exported deduplicated results:")
+                    logging.info(f"  JSON: {json_path}")
+                    logging.info(f"  CSV: {csv_path}")
+                    logging.info(f"  HTML: {html_path}")
+                    
+                    # Log statistics
+                    stats = self.task_manager.result_deduplicator.get_statistics()
+                    logging.info(f"Deduplication statistics: {stats['total_findings']} findings, {stats['duplicates_removed']} duplicates removed")
+                    
+                except Exception as e:
+                    logging.warning(f"Failed to export deduplicated results: {e}")
+            
             self._generate_reports(output_dir)
             
         except KeyboardInterrupt:
@@ -455,6 +567,13 @@ def main(
     
     WARNING: --auth-test enables brute force authentication attacks.
     Only use with explicit written authorization from system owners.
+    
+    CUSTOMIZATION: AutoTest uses a YAML-based playbook system for defining security commands.
+    To customize commands:
+    1. Copy playbook.yml to ~/.autotest/playbook.yml
+    2. Edit your copy to add/modify commands
+    3. AutoTest will automatically use your custom playbook
+    See PLAYBOOK.md for detailed customization instructions.
     
     Note: When using -f, --nmap-xml, or --masscan-json, command-line targets are optional.
     """
@@ -689,7 +808,7 @@ def main(
             console.print(f"[yellow]Port filter active: Only scanning port(s) {ports}[/yellow]")
         
         # Run the scan
-        app.run_scan(processed_targets, ports)
+        app.run_scan(processed_targets, ports, auth_test)
         
     except AutoTestException as e:
         console.print(f"[red]Error:[/red] {e}")

@@ -2,7 +2,8 @@
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, Type, Optional, Any, List, Tuple
+from typing import Dict, Type, Optional, Any, List, Tuple, Union
+from pathlib import Path
 import logging
 import sys
 import os
@@ -92,6 +93,35 @@ class Plugin(ABC):
             Dictionary of optional parameters and defaults
         """
         return {}
+    
+    def cleanup(self) -> None:
+        """
+        Cleanup any temporary files or resources created by the plugin.
+        
+        This method is called after plugin execution to ensure proper cleanup.
+        Override this method in plugin implementations to add custom cleanup logic.
+        """
+        if hasattr(self, '_temp_files'):
+            for temp_file in getattr(self, '_temp_files', []):
+                try:
+                    if isinstance(temp_file, (str, Path)):
+                        temp_path = Path(temp_file)
+                        if temp_path.exists():
+                            temp_path.unlink()
+                except Exception as e:
+                    logger.debug(f"Error cleaning up temporary file {temp_file}: {e}")
+            self._temp_files = []
+    
+    def _register_temp_file(self, file_path: Union[str, Path]) -> None:
+        """
+        Register a temporary file for automatic cleanup.
+        
+        Args:
+            file_path: Path to temporary file
+        """
+        if not hasattr(self, '_temp_files'):
+            self._temp_files = []
+        self._temp_files.append(file_path)
     
     def check_required_tools(self, skip_check: bool = False) -> Tuple[bool, Dict[str, Dict[str, Any]]]:
         """Check if required tools are available.
@@ -215,7 +245,8 @@ class PluginRegistry:
         """
         plugin_name = name or plugin_class.__name__.lower()
         cls._plugins[plugin_name] = plugin_class
-        logger.info(f"Registered plugin: {plugin_name}")
+        # Plugin registration logged at debug level
+        logger.debug(f"Registered plugin: {plugin_name}")
     
     @classmethod
     def get_plugin(cls, name: str) -> Optional[Type[Plugin]]:

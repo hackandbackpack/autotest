@@ -39,14 +39,24 @@ class SNMPPlugin(Plugin):
         self.tool_name = "onesixtyone"
         self.required_tools = ["onesixtyone"]
         
-        # Default wordlist paths
+        # Default wordlist paths - use user writable location if plugin dir not writable
         self.plugin_dir = Path(__file__).parent
-        self.wordlists_dir = self.plugin_dir / "wordlists"
+        
+        # Try to use plugin directory first, fallback to user cache
+        try:
+            test_dir = self.plugin_dir / "wordlists"
+            test_dir.mkdir(exist_ok=True)
+            self.wordlists_dir = test_dir
+        except (PermissionError, OSError):
+            # Fallback to user cache directory
+            import os
+            user_cache = Path(os.path.expanduser("~/.cache/autotest"))
+            user_cache.mkdir(parents=True, exist_ok=True)
+            self.wordlists_dir = user_cache / "wordlists"
+            self.wordlists_dir.mkdir(exist_ok=True)
+            
         self.local_community_list = self.wordlists_dir / "snmp-community-strings.txt"
         self.seclists_path = '/usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt'
-        
-        # Ensure wordlists directory exists
-        self.wordlists_dir.mkdir(exist_ok=True)
         
         # Download wordlist if needed
         self._ensure_wordlist()

@@ -577,12 +577,49 @@ class TaskManager:
                                             if hasattr(self, 'auth_test_enabled'):
                                                 plugin_params["auth_test_enabled"] = self.auth_test_enabled
                                             
-                                            result = plugin_instance.execute(target_host, **plugin_params)
-                                            logging.debug(f"Plugin {plugin_instance.name} returned: {result}")
-                                            return result
-                                        except Exception as e:
-                                            logging.error(f"Plugin {plugin_instance.name} failed: {e}")
-                                            raise
+                                            import signal
+                                            import time
+                                            
+                                            def timeout_handler(signum, frame):
+                                                raise TimeoutError(f"Plugin {plugin_instance.name} timed out after {plugin_params.get('timeout', 300)}s")
+                                            
+                                            try:
+                                                # Set plugin timeout (default 5 minutes)
+                                                timeout = plugin_params.get('timeout', 300)
+                                                if hasattr(signal, 'SIGALRM'):
+                                                    signal.signal(signal.SIGALRM, timeout_handler)
+                                                    signal.alarm(timeout)
+                                                
+                                                # Execute plugin with error isolation
+                                                start_time = time.time()
+                                                result = plugin_instance.execute(target_host, **plugin_params)
+                                                execution_time = time.time() - start_time
+                                                
+                                                logging.debug(f"Plugin {plugin_instance.name} completed in {execution_time:.2f}s")
+                                                logging.debug(f"Plugin {plugin_instance.name} returned: {result}")
+                                                
+                                                return result
+                                                
+                                            except Exception as e:
+                                                # Log plugin error but don't propagate to other plugins
+                                                logging.error(f"Plugin {plugin_instance.name} failed for {target_host}:{target_port}: {e}")
+                                                # Return empty result instead of raising
+                                                return []
+                                            finally:
+                                                # Cancel timeout
+                                                if hasattr(signal, 'SIGALRM'):
+                                                    signal.alarm(0)
+                                                    
+                                                # Always cleanup plugin resources
+                                                if hasattr(plugin_instance, 'cleanup'):
+                                                    try:
+                                                        plugin_instance.cleanup()
+                                                    except Exception as cleanup_error:
+                                                        logging.debug(f"Plugin cleanup error for {plugin_instance.name}: {cleanup_error}")
+                                        except Exception as plugin_error:
+                                            # Handle outer plugin execution errors
+                                            logging.error(f"Failed to execute plugin {plugin_instance.name}: {plugin_error}")
+                                            return []
                                     return execute_plugin
                             
                                 task = Task(
@@ -597,6 +634,184 @@ class TaskManager:
                                 )
                                 
                                 self.add_task(task)
+    
+    def create_tasks_from_playbook(self, discovered_hosts: Dict[str, Any], playbook, 
+                                  port_filter: Optional[str] = None) -> None:
+        """
+        Create tasks based on playbook definitions instead of plugins.
+        
+        Args:
+            discovered_hosts: Dictionary of discovered hosts with their open ports
+            playbook: Loaded playbook with command definitions
+            port_filter: Optional port specification to limit command execution
+        """
+        import uuid
+        import subprocess
+        from pathlib import Path
+        
+        # Parse port filter if provided
+        allowed_ports = None
+        if port_filter:
+            allowed_ports = self._parse_port_filter(port_filter)
+            logging.info(f"Limiting playbook execution to ports: {sorted(allowed_ports)}")
+        
+        total_tasks = 0
+        
+        # Create tasks for each host/port/service combination
+        for host, host_info in discovered_hosts.items():
+            if isinstance(host_info, dict) and 'ports' in host_info:
+                for port in host_info['ports']:
+                    # Skip ports not in the filter if specified
+                    if allowed_ports and port not in allowed_ports:
+                        logging.debug(f"Skipping port {port} - not in allowed ports filter")
+                        continue
+                    
+                    service = host_info.get('services', {}).get(str(port), 'unknown')
+                    logging.debug(f"Host {host}, Port {port}, Service: {service}")
+                    
+                    # Get playbook commands for this service
+                    commands = playbook.get_commands_for_service(service, port)
+                    
+                    for cmd_def in commands:
+                        # Skip if auth required but not enabled
+                        if cmd_def.auth_required and not getattr(self, 'auth_test_enabled', False):
+                            logging.debug(f"Skipping auth-required command '{cmd_def.name}' - auth testing not enabled")
+                            continue
+                        
+                        # Check if required tools are available
+                        if cmd_def.requires:
+                            missing_tools = []
+                            for tool in cmd_def.requires:
+                                if not self._check_tool_available(tool):
+                                    missing_tools.append(tool)
+                            
+                            if missing_tools:
+                                logging.warning(f"Skipping command '{cmd_def.name}' - missing tools: {missing_tools}")
+                                continue
+                        
+                        # Create a task for this command
+                        task_id = str(uuid.uuid4())
+                        
+                        # Prepare command context
+                        context = {
+                            'target': host,
+                            'port': port,
+                            'service': service,
+                            'protocol': 'https' if port == 443 else 'http',
+                            'output_dir': getattr(self, 'output_dir', './output'),
+                            'timestamp': self._get_timestamp(),
+                            'scan_id': getattr(self, 'scan_id', 'default')
+                        }
+                        
+                        # Substitute variables in command
+                        final_command = playbook.substitute_variables(cmd_def.command, context)
+                        
+                        # Create playbook task executor
+                        def make_playbook_executor(command, tool_name, target_host, target_port, cmd_definition):
+                            def execute_playbook_command():
+                                import signal
+                                import time
+                                
+                                def timeout_handler(signum, frame):
+                                    raise TimeoutError(f"Command '{tool_name}' timed out after {cmd_definition.timeout}s")
+                                
+                                try:
+                                    # Set command timeout
+                                    timeout = cmd_definition.timeout
+                                    if hasattr(signal, 'SIGALRM'):
+                                        signal.signal(signal.SIGALRM, timeout_handler)
+                                        signal.alarm(timeout)
+                                    
+                                    # Execute command with error isolation
+                                    start_time = time.time()
+                                    logging.info(f"Executing: {command}")
+                                    
+                                    result = subprocess.run(
+                                        command,
+                                        shell=True,
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=timeout
+                                    )
+                                    
+                                    execution_time = time.time() - start_time
+                                    
+                                    # Add result to deduplicator if available
+                                    if hasattr(self, 'result_deduplicator') and self.result_deduplicator:
+                                        self.result_deduplicator.add_tool_output(
+                                            tool_name=tool_name,
+                                            target=target_host,
+                                            port=target_port,
+                                            raw_output=result.stdout,
+                                            command=command
+                                        )
+                                    
+                                    logging.debug(f"Command '{tool_name}' completed in {execution_time:.2f}s")
+                                    
+                                    return {
+                                        'tool': tool_name,
+                                        'target': target_host,
+                                        'port': target_port,
+                                        'command': command,
+                                        'output': result.stdout,
+                                        'stderr': result.stderr,
+                                        'returncode': result.returncode,
+                                        'execution_time': execution_time
+                                    }
+                                    
+                                except Exception as e:
+                                    # Log command error but don't propagate to other commands
+                                    logging.error(f"Command '{tool_name}' failed for {target_host}:{target_port}: {e}")
+                                    return {
+                                        'tool': tool_name,
+                                        'target': target_host,
+                                        'port': target_port,
+                                        'error': str(e),
+                                        'command': command
+                                    }
+                                finally:
+                                    # Cancel timeout
+                                    if hasattr(signal, 'SIGALRM'):
+                                        signal.alarm(0)
+                                        
+                            return execute_playbook_command
+                        
+                        task = Task(
+                            id=task_id,
+                            name=f"{cmd_def.name}_{host}:{port}",
+                            function=make_playbook_executor(final_command, cmd_def.name, host, port, cmd_def),
+                            priority=self._convert_priority(cmd_def.priority),
+                            target=host,
+                            port=port,
+                            service=service,
+                            plugin_name=cmd_def.name
+                        )
+                        
+                        self.add_task(task)
+                        total_tasks += 1
+        
+        logging.info(f"Created {total_tasks} tasks from playbook '{playbook.name}'")
+    
+    def _check_tool_available(self, tool_name: str) -> bool:
+        """Check if a tool is available on the system."""
+        import shutil
+        return shutil.which(tool_name) is not None
+    
+    def _convert_priority(self, playbook_priority) -> 'TaskPriority':
+        """Convert playbook priority to TaskPriority enum."""
+        from .task_manager import TaskPriority
+        priority_map = {
+            'low': TaskPriority.LOW,
+            'medium': TaskPriority.NORMAL, 
+            'high': TaskPriority.HIGH,
+            'critical': TaskPriority.HIGH
+        }
+        return priority_map.get(playbook_priority.name.lower(), TaskPriority.NORMAL)
+    
+    def _get_timestamp(self) -> str:
+        """Get current timestamp."""
+        from datetime import datetime
+        return datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     
     def _monitor_resources(self) -> None:
         """

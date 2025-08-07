@@ -89,9 +89,18 @@ class Discovery:
         # Parse port specification
         if ports:
             port_list = self._parse_port_spec(ports)
+            use_masscan = len(port_list) > 1000  # Use masscan for large port ranges
         else:
-            # Use default ports from config
-            port_list = [22, 80, 443, 445, 3389, 8080]
+            # Scan all ports (1-65535) when no port range specified - use masscan for performance
+            logging.warning("Full port range scan (1-65535) requested - this will generate significant network traffic")
+            port_list = list(range(1, 65536))
+            use_masscan = True
+            
+        # Memory usage warning for large scans
+        estimated_memory_mb = (len(targets) * len(port_list) * 0.001)  # Rough estimate
+        if estimated_memory_mb > 1000:  # > 1GB estimated
+            logging.warning(f"Large scan detected: {len(targets)} hosts × {len(port_list)} ports")
+            logging.warning(f"Estimated memory usage: ~{estimated_memory_mb:.0f}MB - using masscan for efficiency")
         
         import logging
         logging.info(f"Starting host discovery on {total} targets...")
@@ -107,7 +116,7 @@ class Discovery:
                 port_display = ', '.join(map(str, port_list[:10])) + f'... ({len(port_list)} total)'
             logging.info(f"Port filter active: Only scanning port(s) [{port_display}]")
         else:
-            logging.info(f"Using default ports: {', '.join(map(str, port_list))}")
+            logging.info(f"Scanning all ports: 1-65535 ({len(port_list)} total) - Using masscan for performance")
         
         # Progress tracking
         last_progress_update = time.time()
@@ -158,54 +167,59 @@ class Discovery:
         
         # Phase 2: Port scan live hosts
         if live_hosts:
-            logging.info(f"Phase 1b: Port scanning {len(live_hosts)} live hosts on {len(port_list)} ports...")
-            
-            # Reset for port scanning phase
-            completed = 0
-            total = len(live_hosts)
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-                # Submit port scan tasks for each live host
-                future_to_host = {
-                    executor.submit(self.scan_ports, host, port_list): host 
-                    for host in live_hosts
-                }
+            if use_masscan:
+                logging.info(f"Phase 1b: Port scanning {len(live_hosts)} live hosts on {len(port_list)} ports using masscan...")
+                # Use masscan for large port ranges for better performance
+                discovered = self._masscan_port_scan(live_hosts, port_list)
+            else:
+                logging.info(f"Phase 1b: Port scanning {len(live_hosts)} live hosts on {len(port_list)} ports...")
                 
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(future_to_host):
-                    if self._shutdown:
-                        logging.info("Port scan cancelled by user")
-                        # Cancel remaining futures
-                        for f in future_to_host:
-                            f.cancel()
-                        break
-                        
-                    host = future_to_host[future]
-                    completed += 1
+                # Reset for port scanning phase
+                completed = 0
+                total = len(live_hosts)
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+                    # Submit port scan tasks for each live host
+                    future_to_host = {
+                        executor.submit(self.scan_ports, host, port_list): host 
+                        for host in live_hosts
+                    }
                     
-                    try:
-                        open_ports = future.result()
-                        if open_ports:
-                            discovered_hosts[host] = {
-                                'ports': open_ports,
-                                'services': {}
-                            }
+                    # Process results as they complete
+                    for future in concurrent.futures.as_completed(future_to_host):
+                        if self._shutdown:
+                            logging.info("Port scan cancelled by user")
+                            # Cancel remaining futures
+                            for f in future_to_host:
+                                f.cancel()
+                            break
                             
-                            # Try to identify services
-                            for port in open_ports:
-                                service = self.get_service_name(port)
-                                discovered_hosts[host]['services'][str(port)] = service
+                        host = future_to_host[future]
+                        completed += 1
+                        
+                        try:
+                            open_ports = future.result()
+                            if open_ports:
+                                discovered_hosts[host] = {
+                                    'ports': open_ports,
+                                    'services': {}
+                                }
                                 
-                            logging.info(f"Host {host}: Found {len(open_ports)} open ports: {', '.join(map(str, open_ports[:10]))}{'...' if len(open_ports) > 10 else ''}")
-                    except Exception as e:
-                        logging.debug(f"Error scanning {host}: {e}")
-                    
-                    # Log port scan progress
-                    current_time = time.time()
-                    if current_time - last_progress_update >= progress_interval:
-                        percent_complete = (completed / total) * 100
-                        logging.info(f"Port scan progress: {completed}/{total} hosts scanned ({percent_complete:.1f}%) - {len(discovered_hosts)} hosts with open ports")
-                        last_progress_update = current_time
+                                # Try to identify services
+                                for port in open_ports:
+                                    service = self.get_service_name(port)
+                                    discovered_hosts[host]['services'][str(port)] = service
+                                    
+                                logging.info(f"Host {host}: Found {len(open_ports)} open ports: {', '.join(map(str, open_ports[:10]))}{'...' if len(open_ports) > 10 else ''}")
+                        except Exception as e:
+                            logging.debug(f"Error scanning {host}: {e}")
+                        
+                        # Log port scan progress
+                        current_time = time.time()
+                        if current_time - last_progress_update >= progress_interval:
+                            percent_complete = (completed / total) * 100
+                            logging.info(f"Port scan progress: {completed}/{total} hosts scanned ({percent_complete:.1f}%) - {len(discovered_hosts)} hosts with open ports")
+                            last_progress_update = current_time
         
         # Store for export
         self._discovered_hosts = discovered_hosts
@@ -574,3 +588,164 @@ class Discovery:
         
         # Remove duplicates and sort
         return sorted(list(set(ports)))
+    
+    def _masscan_port_scan(self, hosts: List[str], port_list: List[int]) -> Dict[str, Dict]:
+        """
+        Use masscan for efficient large-scale port scanning.
+        
+        Args:
+            hosts: List of hosts to scan
+            port_list: List of ports to scan
+            
+        Returns:
+            Dictionary of discovered hosts with port information
+        """
+        import subprocess
+        import json
+        import tempfile
+        import os
+        from pathlib import Path
+        
+        discovered_hosts = {}
+        
+        try:
+            # Create temporary files for masscan
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as hosts_file:
+                hosts_file.write('\n'.join(hosts))
+                hosts_file_path = hosts_file.name
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as output_file:
+                output_file_path = output_file.name
+            
+            # Build masscan command
+            port_spec = ','.join(map(str, port_list))
+            if len(port_spec) > 10000:  # If port list is very long, use range notation
+                port_spec = f"1-65535"
+            
+            masscan_cmd = [
+                'masscan',
+                '-iL', hosts_file_path,
+                '-p', port_spec,
+                '--rate', '1000',  # Conservative rate to avoid overwhelming targets
+                '-oJ', output_file_path,
+                '--wait', '3'  # Wait for late packets
+            ]
+            
+            logging.info(f"Running masscan: {' '.join(masscan_cmd[:6])}... (truncated)")
+            
+            # Run masscan
+            result = subprocess.run(
+                masscan_cmd,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10-minute timeout
+            )
+            
+            if result.returncode != 0:
+                logging.error(f"Masscan failed: {result.stderr}")
+                # Fall back to regular scanning
+                logging.info("Falling back to regular port scanning...")
+                return self._fallback_port_scan(hosts, port_list)
+            
+            # Parse masscan JSON output
+            if os.path.exists(output_file_path) and os.path.getsize(output_file_path) > 0:
+                with open(output_file_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or not line.startswith('{'):
+                            continue
+                        
+                        try:
+                            record = json.loads(line)
+                            if 'ip' in record and 'ports' in record:
+                                ip = record['ip']
+                                
+                                if ip not in discovered_hosts:
+                                    discovered_hosts[ip] = {
+                                        'ports': [],
+                                        'services': {}
+                                    }
+                                
+                                for port_info in record['ports']:
+                                    if 'port' in port_info:
+                                        port = port_info['port']
+                                        if port not in discovered_hosts[ip]['ports']:
+                                            discovered_hosts[ip]['ports'].append(port)
+                                            discovered_hosts[ip]['services'][str(port)] = self.get_service_name(port)
+                                
+                        except json.JSONDecodeError:
+                            continue
+            
+            # Log results
+            total_open_ports = sum(len(host_info['ports']) for host_info in discovered_hosts.values())
+            logging.info(f"Masscan complete: {len(discovered_hosts)} hosts with open ports, {total_open_ports} total open ports")
+            
+        except subprocess.TimeoutExpired:
+            logging.error("Masscan timeout - falling back to regular scanning")
+            return self._fallback_port_scan(hosts, port_list)
+        except Exception as e:
+            logging.error(f"Masscan error: {e} - falling back to regular scanning")
+            return self._fallback_port_scan(hosts, port_list)
+        finally:
+            # Cleanup temporary files
+            try:
+                if 'hosts_file_path' in locals():
+                    os.unlink(hosts_file_path)
+                if 'output_file_path' in locals():
+                    os.unlink(output_file_path)
+            except:
+                pass
+        
+        return discovered_hosts
+    
+    def _fallback_port_scan(self, hosts: List[str], port_list: List[int]) -> Dict[str, Dict]:
+        """
+        Fallback to regular port scanning when masscan fails.
+        
+        Args:
+            hosts: List of hosts to scan
+            port_list: List of ports to scan
+            
+        Returns:
+            Dictionary of discovered hosts with port information
+        """
+        discovered_hosts = {}
+        completed = 0
+        total = len(hosts)
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_threads) as executor:
+            future_to_host = {
+                executor.submit(self.scan_ports, host, port_list): host 
+                for host in hosts
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_host):
+                if self._shutdown:
+                    break
+                    
+                host = future_to_host[future]
+                completed += 1
+                
+                try:
+                    open_ports = future.result()
+                    if open_ports:
+                        discovered_hosts[host] = {
+                            'ports': open_ports,
+                            'services': {}
+                        }
+                        
+                        # Try to identify services
+                        for port in open_ports:
+                            service = self.get_service_name(port)
+                            discovered_hosts[host]['services'][str(port)] = service
+                            
+                        logging.info(f"Host {host}: Found {len(open_ports)} open ports: {', '.join(map(str, open_ports[:10]))}{'...' if len(open_ports) > 10 else ''}")
+                except Exception as e:
+                    logging.debug(f"Error scanning {host}: {e}")
+                
+                # Progress logging
+                if completed % 10 == 0 or completed == total:
+                    percent = (completed / total) * 100
+                    logging.info(f"Fallback scan progress: {completed}/{total} hosts ({percent:.1f}%)")
+        
+        return discovered_hosts

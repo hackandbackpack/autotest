@@ -172,6 +172,7 @@ class AuthHydraPlugin(Plugin):
                 with open(basic_users, 'w') as f:
                     f.write("\\n".join(["admin", "administrator", "root", "user", "test", "guest", "demo"]))
                 username_list = str(basic_users)
+                self._register_temp_file(basic_users)  # Register for cleanup
             
             if not Path(password_list).exists():
                 logger.warning(f"Password list {password_list} not found, using basic list")
@@ -179,6 +180,7 @@ class AuthHydraPlugin(Plugin):
                 with open(basic_passwords, 'w') as f:
                     f.write("\\n".join(["password", "123456", "admin", "test", "guest", "root", "demo"]))
                 password_list = str(basic_passwords)
+                self._register_temp_file(basic_passwords)  # Register for cleanup
             
             # Build Hydra command
             cmd = [
