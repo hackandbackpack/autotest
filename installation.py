@@ -582,11 +582,12 @@ def main():
         print("    Install with: sudo apt-get install python3 python3-pip git build-essential")
         return
     
-    # Check if running as root (discouraged for user tools)
+    # Confirm system-wide installation
     if os.geteuid() == 0 and not args.auto:
-        print("\n[!] Warning: Running as root is not recommended for user tools")
-        print("    Tool paths will be saved for root user, not your regular user")
-        response = input("\nContinue anyway? (y/n): ")
+        print("\n✓ Running with administrative privileges for system-wide installation")
+        print("  Tools will be installed to standard system paths (/usr/local/bin, /opt)")
+        print("  This ensures compatibility with both user and sudo execution")
+        response = input("\nProceed with system-wide installation? (y/n): ")
         if response.lower() != 'y':
             sys.exit(0)
     
@@ -675,18 +676,21 @@ def main():
                     if available:
                         print(f"[+] {tool_name} is now available at: {path}")
                     else:
-                        # Refresh PATH and try again
-                        subprocess.run(["hash", "-r"], capture_output=True)
-                        
-                        # Get fresh PATH from shell
+                        # Refresh PATH cache and try again
                         try:
+                            # Clear Python's executable cache
+                            import shutil
+                            if hasattr(shutil.which, 'cache_clear'):
+                                shutil.which.cache_clear()
+                            
+                            # Get fresh PATH from shell
                             fresh_path = subprocess.check_output(
                                 ["bash", "-c", "echo $PATH"],
                                 text=True
                             ).strip()
                             os.environ["PATH"] = fresh_path
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"[!] Warning: Could not refresh PATH: {e}")
                         
                         # Check again
                         available, path = check_tool(tool_name, tool_info)
